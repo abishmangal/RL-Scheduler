@@ -1,133 +1,153 @@
 import gymnasium as gym
 from gymnasium import spaces
-from queue import PriorityQueue
+import heapq
 import numpy as np
 
+
 class PrioritySchedulerEnv(gym.Env):
-    def __init__(self, data, encoder_context, max_priority) -> None:
-        super(PrioritySchedulerEnv, self).__init__()
+    def __init__(self, data, encoder_context, max_priority):
+        super().__init__()
 
         self.data = data
         self.encoder_context = encoder_context
         self.max_priority = max_priority
 
-        self.observation_space = spaces.Box(low=-1, high=np.inf, shape=(encoder_context+1, 5), dtype=np.int32)
+        self.observation_space = spaces.Box(
+            low=-1, high=np.inf,
+            shape=(encoder_context + 1, 5),
+            dtype=np.int32
+        )
         self.action_space = spaces.Discrete(max_priority)
 
         self.reset()
 
     def _get_info(self):
-        return {'info': None}
-    
+        return {}
+
     def _get_obs(self):
-        obs = np.ones((self.encoder_context+1, 5), dtype=np.int32) * (-1)
-        if len(self.processes) > self.data_pointer:
-            obs[0,:4] = np.array(self.processes[self.data_pointer])
-        for i in range(self.encoder_context):
-            if i < len(self.execution_queue.queue):
-                obs[i+1,:4] = self.execution_queue.queue[i][1] # data
-                obs[i+1,4] = self.execution_queue.queue[i][0] # priority
-            else:
+        obs = np.full((self.encoder_context + 1, 5), -1, dtype=np.int32)
+
+        # Next arriving process
+        if self.data_pointer < len(self.processes):
+            pid, arrival, instr, remaining = self.processes[self.data_pointer]
+            obs[0, :4] = [pid, arrival, instr, remaining]
+
+        # Current queue
+        for i, (priority, pid, arrival, instr, remaining) in enumerate(self.execution_queue):
+            if i >= self.encoder_context:
                 break
+            obs[i + 1] = [pid, arrival, instr, remaining, priority]
+
         return obs
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        if options != None:
-            try:
-                self.data = options['new_data']
-            except:
-                print('option not recognized - only \'new_data\' implemented')
-        self.total_instructions = 0
+
+        if options and "new_data" in options:
+            self.data = options["new_data"]
+
         self.processes = []
-        #print(self.data)
         for pid in range(self.data.shape[0]):
-            arrival_time = self.data[pid,1].astype(np.int32)
-            instructions = self.data[pid,2].astype(np.int32)
-            self.total_instructions += instructions
-            self.processes.append([pid, arrival_time, instructions, instructions])
+            arrival = int(self.data[pid, 1])
+            instr = int(self.data[pid, 2])
+            self.processes.append([pid, arrival, instr, instr])
 
-        self.current_time = -1
+        self.current_time = 0
         self.data_pointer = 0
+        self.execution_queue = []
         self.completed_processes = []
-        self.current_processes = []
-        self.execution_queue = PriorityQueue()
+        
+        self.total_completed = 0
+        self.total_turnaround = 0
 
-        obs = self._get_obs()
-        info = self._get_info()
+        return self._get_obs(), self._get_info()
 
-        return obs, info
-    
     def step(self, action):
-        # execute as much as possible between last step and now of current process
-        # new process arrives
-        # assign process priority with action
-        # place process into prio queue
-        # repeat until action list empty
+        new_completions = 0
+        new_turnarounds = 0
+
+        # If new process arrives
         if self.data_pointer < len(self.processes):
-            #print(self.processes)
-            #print(self.data_pointer)
-            #print(self.processes[self.data_pointer])
-            delta_time = (self.processes[self.data_pointer][1] - self.current_time).astype(np.int32)  # get time difference between last and this step
-            # Add next process to current observation, add to priority queue, remove from list of processes
-            self.current_processes.append(self.processes[self.data_pointer])
-            assign_priority = np.argmax(action)
-            #print(assign_priority)
-            self.execution_queue.put((assign_priority, (self.processes[self.data_pointer])))
-            #print(self.execution_queue.queue)
+            proc = self.processes[self.data_pointer]
 
-            # Update current time to arrival time of this process
-            self.current_time = self.processes[self.data_pointer][1]
-            self.data_pointer += 1 # increment data pointer
+            # Execute until this process arrives
+            delta_time = proc[1] - self.current_time
+            if delta_time > 0:
+                completed, turnarounds = self._execute_for_time(delta_time)
+                new_completions += completed
+                new_turnarounds += turnarounds
+
+            # Add process with chosen priority
+            priority = int(action)
+            heapq.heappush(
+                self.execution_queue,
+                (priority, proc[0], proc[1], proc[2], proc[3])
+            )
+
+            # ✅ FIX: Remove redundant assignment - current_time already correct from _execute_for_time
+            # self.current_time = proc[1]  # ← REMOVED THIS LINE
+
+            self.data_pointer += 1
+
         else:
-            delta_time = self.total_instructions # last process added to queue. Finish execution
-        # Update highest priority process based on change in time
-        for _ in range(delta_time):
-            if self.data_pointer >= len(self.processes): # incrementing to finish execution
-                self.current_time += 1
-            if len(self.current_processes) > 0:
-                current_process = self.execution_queue.queue[0]
-                remaining_instructions = current_process[1][3]
-                remaining_instructions -= 1
-                if remaining_instructions == 0:
-                    _, proc = self.execution_queue.get()
-                    pid = proc[0]
-                    #print(self.current_processes)
-                    #print(pid)
-                    #print(self.current_processes[:])
-                    working_index = [p[0] for p in self.current_processes].index(pid)
-                    #print(working_index)
-                    turnaround_time = self.current_time - proc[1] 
-                    self.completed_processes.append((pid, turnaround_time))
-                    self.current_processes.pop(working_index)
-                else:
-                    priority = current_process[0]
-                    pid = current_process[1][0]
-                    arrival = current_process[1][1]
-                    instructions = current_process[1][2]
-                    self.execution_queue.queue[0] = (priority, [pid, arrival, instructions, remaining_instructions])
+            # No more arrivals → finish everything
+            # ✅ This is correct: total remaining instructions = total time needed
+            remaining_time = sum(p[4] for p in self.execution_queue)
+            if remaining_time > 0:
+                completed, turnarounds = self._execute_for_time(remaining_time)
+                new_completions += completed
+                new_turnarounds += turnarounds
+
+        # Update totals
+        self.total_completed += new_completions
+        self.total_turnaround += new_turnarounds
+
+        # Calculate reward correctly
+        reward = 100 * new_completions - new_turnarounds
+
+        terminated = (
+            self.data_pointer == len(self.processes)
+            and len(self.execution_queue) == 0
+        )
+
+        return self._get_obs(), reward, terminated, False, self._get_info()
+
+    def _execute_for_time(self, time_available):
+        """Execute for given time, return (completed_count, sum_turnarounds)"""
+        completed = 0
+        total_turnaround = 0
+        remaining_time = time_available
+
+        while remaining_time > 0 and self.execution_queue:
+            priority, pid, arrival, instr, remaining = heapq.heappop(self.execution_queue)
+
+            run_time = min(remaining_time, remaining)
+
+            self.current_time += run_time
+            remaining_time -= run_time
+            remaining -= run_time
+
+            if remaining == 0:
+                # Process completed
+                turnaround = self.current_time - arrival
+                self.completed_processes.append((pid, turnaround))
+                completed += 1
+                total_turnaround += turnaround
             else:
-                break
+                # Push back with updated remaining
+                heapq.heappush(
+                    self.execution_queue,
+                    (priority, pid, arrival, instr, remaining)
+                )
 
-        # Calculate Reward - 100*(# completed processes) - sum(turnaround time of completed processes)
-        reward = 100 * len(self.completed_processes) - sum(p[1] for p in self.completed_processes)
+        return completed, total_turnaround
 
-        # Check if all processes completed
-        terminated = (len(self.processes) == len(self.completed_processes)) & (len(self.current_processes) == 0)
-
-        info = self._get_info()
-        obs = self._get_obs()
-
-        return obs, reward, terminated, False, info
-    
-    def render(self, mode='human'):
-        print(f"Current Time: {self.current_time}")
-        print("Running Processes:")
-        for priority, process in self.execution_queue.queue:
-            print(f"  Priority: {priority}, PID: {process[0]}, Arrival Time: {process[1]}, Instructions: {process[2]}, Remaining: {process[3]}")
-        if self.execution_queue.not_empty:
-            print(f"Current Process: PID {self.execution_queue.queue[0]}")
-        print("Completed Processes:")
-        for pid, turnaround_time in self.completed_processes:
-            print(f"  PID: {pid}, Turnaround Time: {turnaround_time}")
-        print()
+    def render(self):
+        print(f"\nTime: {self.current_time}")
+        print("Queue:")
+        for p in self.execution_queue:
+            print(f"  Priority {p[0]}: PID {p[1]}, Remaining: {p[4]}/{p[3]}")
+        print(f"Completed: {len(self.completed_processes)} processes")
+        if self.completed_processes:
+            avg_turnaround = sum(t for _, t in self.completed_processes) / len(self.completed_processes)
+            print(f"Average Turnaround: {avg_turnaround:.2f}")

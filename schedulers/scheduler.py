@@ -34,10 +34,11 @@ class Scheduler(ABC):
         "Average waiting time - amount of time a process has been waiting in the ready queue not including execution and I/O"
         waiting_times = []
         for pid in self.pids:
-            arrival_time = self.arrivals[pid]
-            instruction_count = self.arrivals[pid]
-            finish_time = len(self.gantt) - 1 - self.gantt[::-1].index(pid)
-            waiting_times.append(finish_time - arrival_time - instruction_count)
+            arrival = int(self.arrivals[pid])
+            instr = int(self.instr_count[pid])
+            finish = len(self.gantt) - 1 - self.gantt[::-1].index(pid)
+            # time in system minus actual execution time = waiting time
+            waiting_times.append((finish - arrival) - instr)
         return sum(waiting_times) / len(waiting_times)
 
     def response_time(self):
@@ -61,7 +62,7 @@ class Scheduler(ABC):
         self.stat_throughput = self.throughput()
         self.stat_turnaround_time = self.turnaround_time()
         self.stat_response_time = self.response_time()
-        self.stat_waiting_time = -self.waiting_time()
+        self.stat_waiting_time = self.waiting_time()
         self.stat_mean_runtime = self.stat_runtime / len(self.pids)
 
     def print_stats(self):

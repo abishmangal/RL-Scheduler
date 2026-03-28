@@ -13,7 +13,7 @@ dataset3 = np.genfromtxt("./dataset/dataset3.csv", delimiter=',', skip_header=1)
 dataset4 = np.genfromtxt("./dataset/dataset4.csv", delimiter=',', skip_header=1)
 dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
 
-env = gym.make("gym_env:gym_env/PriorityScheduler-v0", data=dataset1, encoder_context=30, max_priority=10)
+env = gym.make("gym_env:gym_env/PriorityScheduler-v0", data=dataset1, encoder_context=30, max_priority=10, time_quantum=4)
 model = PPO(env, 64)
 
 n_steps = 5000000

@@ -1,201 +1,174 @@
 import numpy as np
 import torch
-import gymnasium as gym
-from torch.distributions import MultivariateNormal
+import torch.nn as nn
+from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.nn import MSELoss
+import gymnasium as gym
 
 from network import FeedForwardNN
+
 
 class PPO:
     def __init__(self, env: gym.Env, obs_enc_dim: int) -> None:
         # Environment information
         self.env = env
-        self.obs_dim = env.observation_space.shape[0] * env.observation_space.shape[1]
+        self.obs_dim = env.observation_space.shape[0] * env.observation_space.shape[1]  # flattened (encoder_context+1) * 6
         self.obs_enc_dim = obs_enc_dim
-        self.act_dim = env.action_space.n
-        #self.act_dim = env.action_space.shape[0]
+        self.act_dim = env.action_space.n  # discrete action count
 
         # Hyperparameters
         self._init_hyperparameters()
 
-        # ALG STEP 1
-        # Actor and critic networks
-        '''
-        self.actor = FeedForwardNN(self.obs_enc_dim, self.act_dim)
-        self.critic = FeedForwardNN(self.obs_enc_dim, self.act_dim)
-        '''
+        # Actor: outputs logits over discrete actions
         self.actor = FeedForwardNN(self.obs_dim, self.act_dim)
+        # Critic: outputs single value estimate
         self.critic = FeedForwardNN(self.obs_dim, 1)
-        # Observations encoder
-        #self.obs_enc = FeedForwardNN(self.obs_dim, self.obs_enc_dim)
 
         # Network optimizers
-        self.actor_optim = Adam(self.actor.parameters(), lr = self.lr)
-        self.critic_optim = Adam(self.critic.parameters(), lr = self.lr)
-        #self.obs_enc_optim = Adam(self.obs_enc.parameters(), lr = self.lr)
-
-        # Multivariate Normal Stats
-        self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.5)
-        self.cov_mat = torch.diag(self.cov_var)
+        self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
+        self.critic_optim = Adam(self.critic.parameters(), lr=self.lr)
 
     def _init_hyperparameters(self):
-        # Default hyperparameter values - NEED TO CHANGE
-        self.timesteps_per_batch = 100000
-        self.max_timesteps_per_episode = 10000
-        self.gamma = 0.95 # reward decay
-        self.n_updates_per_iteration = 5
-        self.clip = 0.2 # recommended by PPO paper
-        self.lr = 0.005
+        self.timesteps_per_batch = 2048
+        self.max_timesteps_per_episode = 200
+        self.gamma = 0.99
+        self.n_updates_per_iteration = 10
+        self.clip = 0.2
+        self.lr = 3e-4
 
     def learn(self, n_steps):
-        n = 0 # number of steps taken
-        while n < n_steps: # ALG STEP 2
-            # ALG STEP 3
+        n = 0  # total timesteps so far
+        iteration = 0
+
+        while n < n_steps:
+            # Collect batch of experience
             batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
 
-            # Calculate how many timesteps collected in batch
             n += np.sum(batch_lens)
-            
-            # Calculate V_{phi, k}
+            iteration += 1
+
+            # Compute baseline value estimates
             V, _ = self.evaluate(batch_obs, batch_acts)
 
-            # ALG STEP 5 - Calculate Advantage
+            # Advantage estimation
             A_k = batch_rtgs - V.detach()
 
-            # As found empirically by Eric Yu, using raw advantage values can lead to training instability,
-            # so this project follows his advice and uses normalized advantage
+            # Normalize advantages for training stability
             A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
-            # ALG STEP 6 & 7
-            for _ in range(self.n_updates_per_iteration):
-                # Calculate pi_theta(a_t | s_t)
+            # PPO update loop
+            for update in range(self.n_updates_per_iteration):
                 V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
 
-                # Calculate ratio from PPO algorithm
+                # Probability ratio: pi_theta / pi_theta_old
                 ratios = torch.exp(curr_log_probs - batch_log_probs)
 
-                # calculate surrogate losses from PPO algorithm
+                # Clipped surrogate objective
                 surr1 = ratios * A_k
-                surr2 = torch.clamp(ratios, 1-self.clip, 1+self.clip) * A_k
+                surr2 = torch.clamp(ratios, 1 - self.clip, 1 + self.clip) * A_k
 
-                # Calculate losses.  Use Actor loss to pass through to encoder
                 actor_loss = (-torch.min(surr1, surr2)).mean()
                 critic_loss = MSELoss()(V, batch_rtgs)
-                #encoder_loss = (-torch.min(surr1, surr2)).mean()
-                
-                # Perform backward propogation for actor network
+
                 self.actor_optim.zero_grad()
                 actor_loss.backward(retain_graph=True)
                 self.actor_optim.step()
 
-                # Perform backward propogation for actor network
                 self.critic_optim.zero_grad()
-                critic_loss.backward(retain_graph=True)
+                critic_loss.backward()
                 self.critic_optim.step()
 
-                # Perform backward propogation for encoder network
-                '''
-                self.obs_enc_optim.zero_grad()
-                encoder_loss.backward()
-                self.obs_enc_optim.step()
-                '''
+            print(f"Iteration {iteration} | Timesteps: {n}/{n_steps} | "
+                  f"Actor Loss: {actor_loss.item():.4f} | Critic Loss: {critic_loss.item():.4f} | "
+                  f"Avg Episode Length: {np.mean(batch_lens):.1f}")
 
     def rollout(self):
-        # batch data
-        batch_obs = []                  # batch observations
-        batch_acts = []                 # batch actions
-        batch_log_probs = []            # log probs of each action
-        batch_rews = []                 # batch rewards
-        batch_rtgs = []                 # batch rewards to go
-        batch_lens = []                 # episodic lengths in batch
+        batch_obs = []
+        batch_acts = []
+        batch_log_probs = []
+        batch_rews = []
+        batch_rtgs = []
+        batch_lens = []
 
-        # Number of timesteps run this batch
         t = 0
 
-        while t < self.timesteps_per_batch: 
-            # Rewards this episode
+        while t < self.timesteps_per_batch:
             ep_rews = []
 
             obs, _ = self.env.reset()
-            obs = np.ravel(obs)
+            obs = np.ravel(obs).astype(np.float32)  # flatten (encoder_context+1, 6) -> 1D
             done = False
 
             for ep_t in range(self.max_timesteps_per_episode):
-                # Increment timesteps run this batch
                 t += 1
 
-                # Collect observation
                 batch_obs.append(obs)
 
                 action, log_prob = self.get_action(obs)
-                #print(action)
                 obs, rew, done, _, _ = self.env.step(action)
-                obs = np.ravel(obs)
+                obs = np.ravel(obs).astype(np.float32)
 
-                # Collect reward, action, and log_prob
                 ep_rews.append(rew)
                 batch_acts.append(action)
                 batch_log_probs.append(log_prob)
-            
+
                 if done:
                     break
 
-            # Collect episodic length and rewards
             batch_lens.append(ep_t + 1)
             batch_rews.append(ep_rews)
-        
-        # reshape as tensors 
-        batch_obs = torch.tensor(np.array(batch_obs), dtype=torch.float)
-        batch_acts = torch.tensor(np.array(batch_acts), dtype=torch.float)
-        batch_log_probs = torch.tensor(np.array(batch_log_probs), dtype=torch.float)
 
-        # ALG STEP 4 - Compute rewards-to-go
+        batch_obs = torch.tensor(np.array(batch_obs), dtype=torch.float)
+        batch_acts = torch.tensor(np.array(batch_acts), dtype=torch.long)    # FIX: long for discrete
+        batch_log_probs = torch.tensor(np.array(batch_log_probs), dtype=torch.float)
         batch_rtgs = self.compute_rtgs(batch_rews)
 
-        # Return batch data
         return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
 
     def get_action(self, obs):
-        # encode the observations and query the actor for mean action
-        #obs = self.obs_enc(obs)
-        mean = self.actor(obs)
+        obs_tensor = torch.tensor(obs, dtype=torch.float)
 
-        # create multivariate normal distribution
-        dist = MultivariateNormal(mean, self.cov_mat)
+        # Actor outputs logits → Categorical distribution for discrete actions
+        logits = self.actor(obs_tensor)
+        dist = Categorical(logits=logits)   # FIX: Categorical instead of MultivariateNormal
 
-        # sample action from distribution
         action = dist.sample()
         log_prob = dist.log_prob(action)
 
-        # return detached action and log prob
-        return action.detach().numpy(), log_prob.detach().numpy()
-    
+        return action.detach().item(), log_prob.detach().item()
+
     def compute_rtgs(self, batch_rews):
-        # reawards-to-go per episode to return
         batch_rtgs = []
 
-        # iterate through episode backwards
         for ep_rews in reversed(batch_rews):
-            discounted_reward = 0 # running reward
+            discounted_reward = 0
             for rew in reversed(ep_rews):
-                discounted_reward = rew + (discounted_reward * self.gamma)
+                discounted_reward = rew + discounted_reward * self.gamma
                 batch_rtgs.insert(0, discounted_reward)
 
-        # convert to tensor
         batch_rtgs = torch.tensor(batch_rtgs, dtype=torch.float)
-        #print('rtgs', batch_rtgs.shape)
         return batch_rtgs
 
     def evaluate(self, batch_obs, batch_acts):
-        # query critic network for value V for each obs in batch_obs after encoding
-        #batch_obs = self.obs_enc(batch_obs)
         V = self.critic(batch_obs).squeeze()
-        #print('eval', V.detach().shape)
 
-        # get log probabilities
-        mean = self.actor(batch_obs)
-        dist = MultivariateNormal(mean, self.cov_mat)
+        # FIX: Categorical log_prob for discrete actions
+        logits = self.actor(batch_obs)
+        dist = Categorical(logits=logits)
         log_probs = dist.log_prob(batch_acts)
+
         return V, log_probs
 
+    def save(self, path="ppo_scheduler.pt"):
+        torch.save({
+            'actor': self.actor.state_dict(),
+            'critic': self.critic.state_dict(),
+        }, path)
+        print(f"Model saved to {path}")
+
+    def load(self, path="ppo_scheduler.pt"):
+        checkpoint = torch.load(path)
+        self.actor.load_state_dict(checkpoint['actor'])
+        self.critic.load_state_dict(checkpoint['critic'])
+        print(f"Model loaded from {path}")

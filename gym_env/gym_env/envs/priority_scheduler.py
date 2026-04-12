@@ -44,30 +44,35 @@ class PrioritySchedulerEnv(gym.Env):
         return obs
 
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
+            super().reset(seed=seed)
 
-        if options and "new_data" in options:
-            self.data = options["new_data"]
+            if options and "new_data" in options:
+                self.data = options["new_data"]
 
-        self.processes = []
-        for pid in range(self.data.shape[0]):
-            arrival = int(self.data[pid, 1])
-            instr = int(self.data[pid, 2])
-            self.processes.append([pid, arrival, instr, instr])
+            self.processes = []
+            for pid in range(self.data.shape[0]):
+                arrival = int(self.data[pid, 1])
+                instr = int(self.data[pid, 2])
+                self.processes.append([pid, arrival, instr, instr])
 
-        self.current_time = 0
-        self.data_pointer = 0
-        self.execution_queue = []       # (priority, pid, arrival, instr, remaining, quantum_remaining)
-        self.completed_processes = []
+            self.current_time = 0
+            self.data_pointer = 0
+            self.execution_queue = []       # (priority, pid, arrival, instr, remaining, quantum_remaining)
+            self.completed_processes = []
 
-        self.total_completed = 0
-        self.total_turnaround = 0
+            self.total_completed = 0
+            self.total_turnaround = 0
 
-        return self._get_obs(), self._get_info()
+            # NEW: response time tracking
+            self.first_run_time = {}
+            self.avg_instructions = np.mean([p[2] for p in self.processes])
+
+            return self._get_obs(), self._get_info()
 
     def step(self, action):
         new_completions = 0
         new_turnarounds = 0
+        new_response_times = 0  # NEW
 
         if self.data_pointer < len(self.processes):
             proc = self.processes[self.data_pointer]
@@ -75,9 +80,10 @@ class PrioritySchedulerEnv(gym.Env):
             # Execute until this process arrives
             delta_time = proc[1] - self.current_time
             if delta_time > 0:
-                completed, turnarounds = self._execute_for_time(delta_time)
+                completed, turnarounds, response = self._execute_for_time(delta_time)  # NEW: unpack 3
                 new_completions += completed
                 new_turnarounds += turnarounds
+                new_response_times += response  # NEW
 
             # Add arriving process with chosen priority and full quantum
             if isinstance(action, np.ndarray):
@@ -87,7 +93,7 @@ class PrioritySchedulerEnv(gym.Env):
 
             heapq.heappush(
                 self.execution_queue,
-                (priority, proc[0], proc[1], proc[2], proc[3], self.time_quantum)  # NEW: quantum_remaining
+                (priority, proc[0], proc[1], proc[2], proc[3], self.time_quantum)
             )
 
             self.data_pointer += 1
@@ -96,14 +102,21 @@ class PrioritySchedulerEnv(gym.Env):
             # No more arrivals -> finish everything
             remaining_time = sum(p[4] for p in self.execution_queue)
             if remaining_time > 0:
-                completed, turnarounds = self._execute_for_time(remaining_time)
+                completed, turnarounds, response = self._execute_for_time(remaining_time)  # NEW: unpack 3
                 new_completions += completed
                 new_turnarounds += turnarounds
+                new_response_times += response  # NEW
 
         self.total_completed += new_completions
         self.total_turnaround += new_turnarounds
 
-        reward = 100 * new_completions - new_turnarounds
+        queue_pressure = len(self.execution_queue)
+
+        reward = (
+            - new_turnarounds / self.avg_instructions        # turnaround (main signal)
+            - 0.5 * new_response_times / self.avg_instructions  # response time (half weight)
+            - 0.01 * queue_pressure                          # queue pressure (tiny weight)
+        )
 
         terminated = (
             self.data_pointer == len(self.processes)
@@ -116,22 +129,28 @@ class PrioritySchedulerEnv(gym.Env):
         """
         Execute processes for up to time_available ticks with preemption.
         A process is preempted when its quantum_remaining hits 0.
-        Returns (completed_count, sum_of_turnarounds).
+        Returns (completed_count, sum_of_turnarounds, sum_of_response_times).
         """
         completed = 0
         total_turnaround = 0
+        new_response = 0        # NEW
         remaining_time = time_available
 
         while remaining_time > 0 and self.execution_queue:
             priority, pid, arrival, instr, remaining, quantum_rem = heapq.heappop(self.execution_queue)
 
+            # NEW: track first run time for response time — before current_time advances
+            if pid not in self.first_run_time:
+                self.first_run_time[pid] = self.current_time
+                new_response += self.current_time - arrival  # response = first_run - arrival
+
             # Run for the minimum of: time left, instructions left, quantum left
-            run_time = min(remaining_time, remaining, quantum_rem)  # NEW: quantum cap
+            run_time = min(remaining_time, remaining, quantum_rem)
 
             self.current_time += run_time
             remaining_time -= run_time
             remaining -= run_time
-            quantum_rem -= run_time  # NEW: consume quantum
+            quantum_rem -= run_time
 
             if remaining == 0:
                 # Process fully completed
@@ -141,10 +160,10 @@ class PrioritySchedulerEnv(gym.Env):
                 total_turnaround += turnaround
 
             elif quantum_rem == 0:
-                # NEW: Quantum exhausted - preempt and push back with fresh quantum
+                # Quantum exhausted - preempt and push back with fresh quantum
                 heapq.heappush(
                     self.execution_queue,
-                    (priority, pid, arrival, instr, remaining, self.time_quantum)  # reset quantum
+                    (priority, pid, arrival, instr, remaining, self.time_quantum)
                 )
 
             else:
@@ -154,7 +173,7 @@ class PrioritySchedulerEnv(gym.Env):
                     (priority, pid, arrival, instr, remaining, quantum_rem)
                 )
 
-        return completed, total_turnaround
+        return completed, total_turnaround, new_response  # NEW: return 3 values
 
     def render(self):
         print(f"\nTime: {self.current_time}")

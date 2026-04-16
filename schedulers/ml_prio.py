@@ -24,11 +24,13 @@ class MLPriority(Scheduler):
             print("MLPriority must be instantiated with 'encoder_context' and 'max_priority' kwargs")
 
         self.time_quantum = kwargs.get('time_quantum', 4)
+        self.aging_threshold = kwargs.get('aging_threshold', 50)
+        self.aging_boost = kwargs.get('aging_boost', 1)
+        self.aging_interval = kwargs.get('aging_interval', 100)
 
-        # FIX 1: * 6 instead of * 5 (added quantum_remaining as 6th feature)
-        self.model = FeedForwardNN((self.encoder_context + 1) * 6, self.max_priority)
+        # FIX: * 7 (added wait_time as 7th feature)
+        self.model = FeedForwardNN((self.encoder_context + 1) * 7, self.max_priority)
 
-        # FIX 2: use model_path kwarg with absolute path resolution
         model_path = kwargs.get('model_path', 'model_weights/ml_priority_scheduler_dataset3_5mil_30context.pt')
         project_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
         full_path = os.path.join(project_root, model_path)
@@ -36,71 +38,121 @@ class MLPriority(Scheduler):
         self.model.eval()
 
     def run(self):
-        # Build process list [pid, arrival, instr, remaining]
         processes = []
         for pid in range(self.raw_data.shape[0]):
             arrival = int(self.raw_data[pid, 1])
             instr = int(self.raw_data[pid, 2])
             processes.append([pid, arrival, instr, instr])
 
-        # FIX 3: heapq instead of PriorityQueue (no mutex, no heap invariant bugs)
-        # tuple: (priority, pid, arrival, instr, remaining, quantum_remaining)
         self.execution_queue = []
         data_pointer = 0
         time = 0
+
+        # Wait time tracking (matches env)
+        self.wait_since = {}
+        self.total_wait = {}
+        self.assigned_priority = {}
+        self.last_aging_time = 0
 
         while self.execution_queue or data_pointer < len(processes):
 
             # Add all processes arriving at current time
             while data_pointer < len(processes) and processes[data_pointer][1] == time:
                 proc = processes[data_pointer]
-                priority = self._get_priority(data_pointer, processes)
+                priority = self._get_priority(data_pointer, processes, time)
+                self.wait_since[proc[0]] = time
+                self.total_wait[proc[0]] = 0
+                self.assigned_priority[proc[0]] = priority
                 heapq.heappush(self.execution_queue,
                                (priority, proc[0], proc[1], proc[2], proc[3], self.time_quantum))
                 data_pointer += 1
 
+            # Apply aging periodically
+            self._apply_aging(time)
+
             if self.execution_queue:
                 priority, pid, arrival, instr, remaining, quantum_rem = heapq.heappop(self.execution_queue)
+
+                # Accumulate wait time before running
+                wait_accumulated = time - self.wait_since.get(pid, time)
+                self.total_wait[pid] = self.total_wait.get(pid, 0) + wait_accumulated
+
                 self.gantt.append(pid)
                 remaining -= 1
                 quantum_rem -= 1
+                time += 1
 
                 if remaining == 0:
-                    # Process complete
-                    time += 1
+                    # Process complete — clean up
+                    self.wait_since.pop(pid, None)
+                    self.total_wait.pop(pid, None)
+                    self.assigned_priority.pop(pid, None)
                     continue
                 elif quantum_rem == 0:
-                    # FIX 4: preempt - push back with fresh quantum
+                    # Preempt — restore original priority, aging reapplies separately
+                    original_priority = self.assigned_priority.get(pid, priority)
+                    self.wait_since[pid] = time
                     heapq.heappush(self.execution_queue,
-                                   (priority, pid, arrival, instr, remaining, self.time_quantum))
+                                   (original_priority, pid, arrival, instr, remaining, self.time_quantum))
                 else:
+                    original_priority = self.assigned_priority.get(pid, priority)
                     heapq.heappush(self.execution_queue,
-                                   (priority, pid, arrival, instr, remaining, quantum_rem))
+                                   (original_priority, pid, arrival, instr, remaining, quantum_rem))
             else:
                 self.gantt.append(-1)
+                time += 1
 
-            time += 1
+    def _apply_aging(self, current_time):
+        """Apply priority aging periodically — matches env logic."""
+        if current_time - self.last_aging_time < self.aging_interval:
+            return
 
-    def _get_priority(self, data_pointer, processes):
-        obs = self._get_observation(data_pointer, processes).ravel().astype(np.float32)
+        self.last_aging_time = current_time
+        aged = False
+        new_queue = []
+
+        for priority, pid, arrival, instr, remaining, quantum_rem in self.execution_queue:
+            current_wait = self.total_wait.get(pid, 0) + (
+                current_time - self.wait_since.get(pid, current_time)
+            )
+            if current_wait >= self.aging_threshold:
+                original = self.assigned_priority.get(pid, priority)
+                boost_amount = (current_wait // self.aging_threshold) * self.aging_boost
+                new_priority = max(0, original - boost_amount)
+                if new_priority != priority:
+                    aged = True
+                new_queue.append((new_priority, pid, arrival, instr, remaining, quantum_rem))
+            else:
+                new_queue.append((priority, pid, arrival, instr, remaining, quantum_rem))
+
+        if aged:
+            heapq.heapify(new_queue)
+            self.execution_queue = new_queue
+
+    def _get_priority(self, data_pointer, processes, current_time):
+        obs = self._get_observation(data_pointer, processes, current_time).ravel().astype(np.float32)
         with torch.no_grad():
             logits = self.model(obs)
         return int(torch.argmax(logits).item())
 
-    def _get_observation(self, data_pointer, processes):
-        # FIX 5: obs shape (encoder_context+1, 6) to match trained model
-        obs = np.full((self.encoder_context + 1, 6), -1, dtype=np.float32)
+    def _get_observation(self, data_pointer, processes, current_time):
+        # FIX: obs shape (encoder_context+1, 7) — added wait_time as 7th feature
+        obs = np.full((self.encoder_context + 1, 7), -1, dtype=np.float32)
 
         # Row 0: next arriving process
         proc = processes[data_pointer]
         obs[0, :4] = [proc[0], proc[1], proc[2], proc[3]]
-        obs[0, 4] = -1                  # no priority assigned yet
-        obs[0, 5] = self.time_quantum   # will get full quantum when scheduled
+        obs[0, 4] = -1                  # no priority yet
+        obs[0, 5] = self.time_quantum   # full quantum when scheduled
+        obs[0, 6] = 0                   # wait time = 0, not in queue yet
 
         # Rows 1+: current queue snapshot
         for i, (priority, pid, arrival, instr, remaining, quantum_rem) in enumerate(self.execution_queue):
             if i >= self.encoder_context:
                 break
-            obs[i + 1] = [pid, arrival, instr, remaining, priority, quantum_rem]
+            wait_time = self.total_wait.get(pid, 0) + (
+                current_time - self.wait_since.get(pid, current_time)
+            )
+            obs[i + 1] = [pid, arrival, instr, remaining, priority, quantum_rem, wait_time]
 
         return obs

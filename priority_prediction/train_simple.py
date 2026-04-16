@@ -21,7 +21,7 @@ env = gym.make("gym_env:gym_env/PriorityScheduler-v0",
 model = PPO(env, 64)
 
 # Training parameters
-n_steps = 5000000
+n_steps = 2000000
 
 print('=' * 50)
 print('Training PPO model on Dataset 3')

@@ -8,6 +8,8 @@ Response Time	(first_run - arrival) / avg_instr	0.5	Interactivity for short jobs
 Queue Pressure	queue_len / max_queue_len	0.01	Regularization to prevent starvation
 All terms are negative in reward (minimization), normalized to same scale, and combined to guide the RL agent toward balanced scheduling policies.
 
+
+
 # Version 1.2
 # CPU Scheduler — Update Changelog
 **Date:** 2026-03-28

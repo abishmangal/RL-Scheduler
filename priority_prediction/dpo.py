@@ -1,6 +1,6 @@
 """
 DPO (Direct Preference Optimization) for CPU Priority Scheduling
-Current Environment Version - 6 features, includes time quantum
+Current Environment Version - 9 features, includes time quantum
 """
 
 import copy
@@ -136,9 +136,8 @@ class DPO:
         self.beta = beta
         self.batch_size = batch_size
 
-        # Calculate observation dimension for initial environment (5 features)
         obs_sample, _ = env.reset()
-        obs_dim = np.ravel(obs_sample).shape[0]  # (encoder_context+1) * 5
+        obs_dim = np.ravel(obs_sample).shape[0]
         act_dim = env.action_space.n
 
         print(f"DPO Initialized:")

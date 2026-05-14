@@ -1,8 +1,3 @@
-"""
-Live demo comparing schedulers side-by-side with Gantt charts
-Updated for environment with time quantum (6 features)
-"""
-
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -61,6 +56,7 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
     from schedulers.round_robin import RoundRobin
     from schedulers.cfs import CFS
     from schedulers.mlq import MLQ
+    from schedulers.mfq import MFQ
     from schedulers.ml_prio import MLPriority
     from schedulers.dpo_prio import DPOPriority
     from schedulers.dqn_prio import DQNPriority
@@ -74,6 +70,7 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
         'RoundRobin': (RoundRobin, {'time_quantum': 4}),
         'CFS': (CFS, {}),
         'MLQ': (MLQ, {}),  # Added MLQ
+        'MFQ': (MFQ, {}),  # Added MFQ
         'PPO': (MLPriority, {
             'encoder_context': 30,
             'max_priority': 10,
@@ -239,7 +236,7 @@ if __name__ == "__main__":
     
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
-    dataset_path = "./dataset/dataset_starvation_test.csv"
+    dataset_path = "./dataset/test/dataset_starvation_test.csv"
     
     if not os.path.exists(dataset_path):
         print(f"Dataset not found: {dataset_path}")

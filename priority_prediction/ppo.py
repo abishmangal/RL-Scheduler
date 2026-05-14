@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import gymnasium as gym
-from torch.distributions import MultivariateNormal
+from torch.distributions import Categorical
 from torch.optim import Adam
 from torch.nn import MSELoss
 
@@ -35,9 +35,7 @@ class PPO:
         self.critic_optim = Adam(self.critic.parameters(), lr = self.lr)
         #self.obs_enc_optim = Adam(self.obs_enc.parameters(), lr = self.lr)
 
-        # Multivariate Normal Stats
-        self.cov_var = torch.full(size=(self.act_dim,), fill_value=0.5)
-        self.cov_mat = torch.diag(self.cov_var)
+        # Categorical distribution for discrete actions (no covariance needed)
 
     def _init_hyperparameters(self):
         self.timesteps_per_batch = 2048
@@ -179,9 +177,8 @@ class PPO:
             batch_lens.append(ep_t + 1)
             batch_rews.append(ep_rews)
         
-        # reshape as tensors 
         batch_obs = torch.tensor(np.array(batch_obs), dtype=torch.float)
-        batch_acts = torch.tensor(np.array(batch_acts), dtype=torch.float)
+        batch_acts = torch.tensor(np.array(batch_acts), dtype=torch.long)
         batch_log_probs = torch.tensor(np.array(batch_log_probs), dtype=torch.float)
 
         # ALG STEP 4 - Compute rewards-to-go
@@ -191,19 +188,11 @@ class PPO:
         return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens, batch_rews
 
     def get_action(self, obs):
-        # encode the observations and query the actor for mean action
-        #obs = self.obs_enc(obs)
-        mean = self.actor(obs)
-
-        # create multivariate normal distribution
-        dist = MultivariateNormal(mean, self.cov_mat)
-
-        # sample action from distribution
+        logits = self.actor(obs)
+        dist = Categorical(logits=logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
-
-        # return detached action and log prob
-        return action.detach().numpy(), log_prob.detach().numpy()
+        return action.item(), log_prob.item()
     
     def compute_rtgs(self, batch_rews):
         # reawards-to-go per episode to return
@@ -222,14 +211,9 @@ class PPO:
         return batch_rtgs
 
     def evaluate(self, batch_obs, batch_acts):
-        # query critic network for value V for each obs in batch_obs after encoding
-        #batch_obs = self.obs_enc(batch_obs)
         V = self.critic(batch_obs).squeeze()
-        #print('eval', V.detach().shape)
-
-        # get log probabilities
-        mean = self.actor(batch_obs)
-        dist = MultivariateNormal(mean, self.cov_mat)
+        logits = self.actor(batch_obs)
+        dist = Categorical(logits=logits)
         log_probs = dist.log_prob(batch_acts)
         return V, log_probs
 

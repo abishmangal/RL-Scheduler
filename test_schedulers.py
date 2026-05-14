@@ -1,7 +1,7 @@
 """
 Scheduler Comparison Script (Time Quantum Enabled)
 Tests: FIFO, Round Robin, CFS, MLQ, MFQ, PPO, DPO
-Environment: 6 features, WITH time quantum, NO aging
+Environment: 9 features, WITH time quantum, NO aging
 """
 
 import os
@@ -21,7 +21,7 @@ from schedulers.dpo_prio import DPOPriority
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-CSV = "./dataset/dataset1.csv"
+CSV = "./dataset/train/dataset1.csv"
 
 ENCODER_CONTEXT = 30
 MAX_PRIORITY = 10
@@ -68,7 +68,7 @@ if data.ndim == 1:
 
 print(f"\nDataset: {CSV}")
 print(f"Processes: {data.shape[0]}")
-print(f"Environment: 6 features (with time quantum={TIME_QUANTUM}, no aging)")
+print(f"Environment: 9 features (with time quantum={TIME_QUANTUM}, no aging)")
 print()
 
 # -----------------------------

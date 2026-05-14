@@ -2,4 +2,3 @@
 *tempCodeRunnerFile.py
 gym_env/gym_env.egg-info/*
 dataset/dataset*.csv
-dataset/test/*

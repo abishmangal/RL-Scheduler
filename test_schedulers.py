@@ -29,9 +29,9 @@ TIME_QUANTUM = 4  # Time quantum for preemptive scheduling
 
 # Model paths (update these to your actual model paths)
 MODEL_PATHS = {
-    'PPO': 'model_weights/ml_priority_scheduler_5mil_30context.pt',
-    'DPO': 'model_weights/dpo_scheduler_5mil_30context.pt',
-    'DQN': 'model_weights/dqn_scheduler_5mil_30context.pt'
+    'PPO': 'model_weights/ppo_trained_model.pt',
+    'DPO': 'model_weights/dpo_trained_model.pt',
+    'DQN': 'model_weights/dqn_trained_model.pt'
 }
 
 # -----------------------------

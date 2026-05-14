@@ -15,7 +15,7 @@ dataset = np.genfromtxt(os.path.join(ROOT, "dataset", "dataset3.csv"), delimiter
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0", data=dataset, encoder_context=30, max_priority=10)
 
 model = PPO(env, 64)
-model.actor.load_state_dict(torch.load(os.path.join(ROOT, "model_weights", "ml_priority_scheduler_5mil_30context.pt"), weights_only=True))
+model.actor.load_state_dict(torch.load(os.path.join(ROOT, "model_weights", "ppo_trained_model.pt"), weights_only=True))
 model.actor.eval()
 
 obs, _ = env.reset()

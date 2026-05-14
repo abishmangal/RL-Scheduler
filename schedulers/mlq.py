@@ -4,12 +4,9 @@ from collections import deque
 
 class MLQ(Scheduler):
     def __init__(self, data, **kwargs):
-        super().__init__(data=None)
-        raw = np.array(data)
+        super().__init__(data)
+        raw = np.array(data) if not isinstance(data, np.ndarray) else data
         self.processes = [[int(r[0]), int(r[1]), int(r[2]), int(r[2])] for r in raw]
-        self.pids = raw[:, 0].astype(int)
-        self.arrivals = raw[:, 1]
-        self.instr_count = raw[:, 2]
         self.queues = [deque(), deque(), deque()]
 
     def run(self):

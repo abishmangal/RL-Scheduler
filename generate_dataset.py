@@ -2,6 +2,7 @@
 """
 Dataset Generator for CPU Scheduling Comparison
 Generates datasets that expose weaknesses of classical schedulers
+All datasets use sequential PIDs (0,1,2,...) for correct statistics calculation
 """
 
 import numpy as np
@@ -10,6 +11,7 @@ import os
 def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructions=50, seed=42):
     """
     Generate a dataset that specifically exposes classical scheduler weaknesses.
+    All PIDs are sequential (0, 1, 2, ...) for correct statistics.
     
     Key test scenarios:
     1. FIFO blocking: Long job arriving early blocks short jobs
@@ -20,15 +22,12 @@ def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructi
     """
     np.random.seed(seed)
     
-    data = np.zeros((n_processes, 3), dtype=np.int32)
-    
     # Create varied instruction counts to test different scenarios
-    # Mix of short (interactive), medium, and long (batch) jobs
     instruction_probs = [
         (1, 5, 0.35),    # 35% short interactive jobs (1-5 instructions)
         (6, 15, 0.35),   # 35% medium jobs (6-15 instructions)
         (16, 30, 0.20),  # 20% long jobs (16-30 instructions)
-        (31, 100, 0.10)  # 10% very long jobs (31-100 instructions) - starvation candidates
+        (31, 100, 0.10)  # 10% very long jobs (31-100 instructions)
     ]
     
     instructions = []
@@ -49,7 +48,7 @@ def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructi
     arrivals = []
     
     # 1. FIFO blocking test: Long job arrives at time 5
-    arrivals.append(5)
+    long_job_arrival = 5
     
     # 2. Response time test: Urgent jobs arriving late
     urgent_arrivals = [480, 485, 490, 495]
@@ -58,10 +57,12 @@ def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructi
     burst_times = [100, 200, 300]
     
     # 4. Normal distribution for remaining
-    normal_arrivals = np.random.uniform(0, max_arrival, n_processes - 1 - len(urgent_arrivals) - len(burst_times))
+    remaining_count = n_processes - 1 - len(urgent_arrivals) - (len(burst_times) * 5)
+    normal_arrivals = np.random.uniform(0, max_arrival, remaining_count)
     normal_arrivals = np.clip(normal_arrivals, 1, max_arrival - 10)
     
     # Build arrival list
+    arrivals.append(long_job_arrival)
     arrivals.extend(normal_arrivals.tolist())
     arrivals.extend(urgent_arrivals)
     for burst in burst_times:
@@ -70,27 +71,22 @@ def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructi
     
     arrivals = np.array(arrivals)
     
-    # Sort by arrival time (but keep the long job at position 5)
-    # Create pairs and sort
-    pairs = list(zip(instructions, arrivals))
-    pairs.sort(key=lambda x: x[1])
+    # Sort by arrival time
+    sorted_indices = np.argsort(arrivals)
+    instructions = instructions[sorted_indices]
+    arrivals = arrivals[sorted_indices]
     
-    # Reconstruct
-    instructions = np.array([p[0] for p in pairs])
-    arrivals = np.array([p[1] for p in pairs])
+    # Make sure the long job (first in sorted order) has long instructions
+    # Find the job that arrived at time 5 (or earliest)
+    early_indices = np.where(arrivals <= 10)[0]
+    if len(early_indices) > 0:
+        instructions[early_indices[0]] = 80  # Very long job for FIFO test
     
-    # Ensure the long job stays at arrival 5 (for FIFO test)
-    # Find index of arrival 5 and make sure it has a long instruction
-    idx = np.where(arrivals == 5)[0]
-    if len(idx) > 0:
-        instructions[idx[0]] = 80  # Very long job for starvation test
-    
-    # Add PID
+    # Add sequential PIDs (0, 1, 2, ...)
     pids = np.arange(n_processes)
     
-    data[:, 0] = pids
-    data[:, 1] = arrivals
-    data[:, 2] = instructions
+    # Create final dataset
+    data = np.column_stack([pids, arrivals.astype(np.int32), instructions.astype(np.int32)])
     
     return data
 
@@ -98,6 +94,7 @@ def generate_challenging_dataset(n_processes=500, max_arrival=500, max_instructi
 def generate_test_dataset(size=500, scenario="balanced", seed=42):
     """
     Generate specialized datasets for different test scenarios.
+    All PIDs are sequential (0, 1, 2, ...) for correct statistics.
     
     scenarios:
     - "balanced": Mixed workload
@@ -108,40 +105,41 @@ def generate_test_dataset(size=500, scenario="balanced", seed=42):
     """
     np.random.seed(seed)
     
-    data = np.zeros((size, 3), dtype=np.int32)
-    
     if scenario == "fifo_test":
         # Many short jobs after a long job - tests FIFO blocking
-        instructions = np.ones(size) * 2  # Most are short
+        instructions = np.ones(size, dtype=np.int32) * 2  # Most are short
         instructions[0] = 100  # First process is very long
         arrivals = np.random.uniform(0, 500, size)
         arrivals[0] = 10  # Long job arrives early
+        arrivals = arrivals.astype(np.int32)
         
     elif scenario == "starvation_test":
         # Mix with very long jobs that may starve in SJF
         instructions = np.where(np.random.random(size) < 0.2, 
                                 np.random.randint(50, 100, size),  # 20% very long
                                 np.random.randint(1, 10, size))    # 80% short
-        arrivals = np.random.uniform(0, 500, size)
+        instructions = instructions.astype(np.int32)
+        arrivals = np.random.uniform(0, 500, size).astype(np.int32)
         
     elif scenario == "response_test":
         # Urgent jobs arriving late - tests response time
-        instructions = np.ones(size) * 5  # All medium
+        instructions = np.ones(size, dtype=np.int32) * 5  # All medium
         urgent_indices = np.random.choice(size, size//10, replace=False)
         instructions[urgent_indices] = 1  # 10% are urgent (1 instruction)
         arrivals = np.random.uniform(0, 480, size)
         # Make some urgent jobs arrive later
         for idx in urgent_indices[:5]:
             arrivals[idx] = np.random.uniform(480, 500)
-            
+        arrivals = arrivals.astype(np.int32)
+        
     elif scenario == "burst_test":
         # Many jobs arriving simultaneously - tests queue management
-        instructions = np.random.randint(1, 20, size)
+        instructions = np.random.randint(1, 20, size).astype(np.int32)
         # Create bursts
-        arrivals = np.zeros(size)
+        arrivals = np.zeros(size, dtype=np.int32)
         for i in range(0, size, 20):
             arrivals[i:i+20] = i * 10 + np.random.randint(-5, 5, 20)
-        arrivals = np.clip(arrivals, 0, 500)
+        arrivals = np.clip(arrivals, 0, 500).astype(np.int32)
         
     else:  # "balanced" - default
         # Mixed: 40% short, 35% medium, 25% long
@@ -152,25 +150,26 @@ def generate_test_dataset(size=500, scenario="balanced", seed=42):
             instructions.append(np.random.randint(6, 15))
         for _ in range(size - len(instructions)):
             instructions.append(np.random.randint(16, 50))
-        instructions = np.array(instructions)
-        arrivals = np.random.uniform(0, 500, size)
+        instructions = np.array(instructions, dtype=np.int32)
+        arrivals = np.random.uniform(0, 500, size).astype(np.int32)
     
     # Sort by arrival time
     sorted_idx = np.argsort(arrivals)
     instructions = instructions[sorted_idx]
     arrivals = arrivals[sorted_idx]
     
-    # Add PID
+    # Add sequential PIDs (0, 1, 2, ...)
     pids = np.arange(size)
-    data[:, 0] = pids
-    data[:, 1] = arrivals.astype(np.int32)
-    data[:, 2] = instructions.astype(np.int32)
+    
+    # Create final dataset
+    data = np.column_stack([pids, arrivals, instructions])
     
     return data
 
 
 def save_dataset(data, filename, directory="./dataset/"):
     """Save dataset in the required format"""
+    directory = os.path.join(directory, "test")
     os.makedirs(directory, exist_ok=True)
     savepath = os.path.join(directory, filename + '.csv')
     np.savetxt(savepath, data, fmt='%i', delimiter=',', 
@@ -185,6 +184,7 @@ def print_statistics(data, name="Dataset"):
     print(f"{name} Statistics")
     print(f"{'='*50}")
     print(f"Total processes: {len(data)}")
+    print(f"PID range: {data[:,0].min()} - {data[:,0].max()} (sequential)")
     print(f"Arrival time range: {data[:,1].min()} - {data[:,1].max()}")
     print(f"Instructions: min={data[:,2].min()}, max={data[:,2].max()}, avg={data[:,2].mean():.1f}")
     
@@ -208,11 +208,9 @@ def print_statistics(data, name="Dataset"):
     if len(late_urgent) > 0:
         print(f"⚠️  Late urgent jobs (arrival>400, instr<=3): {len(late_urgent)} - Response time test")
     
-    bursts = {}
-    for t in data[:,1]:
-        count = np.sum(data[:,1] == t)
-        if count > 5:
-            bursts[t] = count
+    # Check burst arrivals
+    unique_times, counts = np.unique(data[:,1], return_counts=True)
+    bursts = {t: c for t, c in zip(unique_times, counts) if c > 5}
     if bursts:
         print(f"⚠️  Burst arrivals: {bursts} - Queue management test")
 
@@ -222,7 +220,6 @@ def print_statistics(data, name="Dataset"):
 # ============================================================
 
 if __name__ == "__main__":
-    import sys
     
     # Generate main challenging dataset (500 processes)
     print("Generating Challenging Dataset (500 processes)...")
@@ -232,9 +229,6 @@ if __name__ == "__main__":
         max_instructions=50,
         seed=42
     )
-    
-    # Sort by arrival time
-    dataset = dataset[dataset[:,1].argsort()]
     
     # Save
     save_dataset(dataset, "dataset_challenging_500")
@@ -267,15 +261,17 @@ if __name__ == "__main__":
     
     # 5. Small balanced dataset for quick testing (50 processes)
     small_dataset = generate_challenging_dataset(50, max_arrival=200, max_instructions=30, seed=42)
-    small_dataset = small_dataset[small_dataset[:,1].argsort()]
     save_dataset(small_dataset, "dataset_small_50")
     
     print("\n" + "="*60)
     print("All datasets generated successfully!")
     print("="*60)
     
-    # Display first 20 lines of the main dataset (exact format)
-    print("\n=== First 20 lines of challenging dataset (exact format) ===")
+    # Display first 20 lines of the main dataset
+    print("\n=== First 20 lines of challenging dataset ===")
     print("PID,ArrivalTime,InstructionCount")
     for i in range(min(20, len(dataset))):
         print(f"{dataset[i,0]},{dataset[i,1]},{dataset[i,2]}")
+    
+    # Verify PIDs are sequential
+    print(f"\n✅ PID verification: 0 to {dataset[-1,0]} (sequential)")

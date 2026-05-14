@@ -13,10 +13,11 @@ import gym_env
 from dpo import DPO, collect_preferences
 
 # Load datasets
-dataset1 = np.genfromtxt("./dataset/dataset1.csv", delimiter=',', skip_header=1)
-dataset2 = np.genfromtxt("./dataset/dataset2.csv", delimiter=',', skip_header=1)
-dataset3 = np.genfromtxt("./dataset/dataset3.csv", delimiter=',', skip_header=1)
-dataset4 = np.genfromtxt("./dataset/dataset4.csv", delimiter=',', skip_header=1)
+dataset1 = np.genfromtxt("./dataset/train/dataset1.csv", delimiter=',', skip_header=1)
+dataset2 = np.genfromtxt("./dataset/train/dataset2.csv", delimiter=',', skip_header=1)
+dataset3 = np.genfromtxt("./dataset/train/dataset3.csv", delimiter=',', skip_header=1)
+dataset4 = np.genfromtxt("./dataset/train/dataset4.csv", delimiter=',', skip_header=1)
+dataset5 = np.genfromtxt("./dataset/train/dataset5.csv", delimiter=',', skip_header=1)
 
 # Create environment with first dataset
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0", 
@@ -37,6 +38,7 @@ start_time = time.time()
 print('Starting time:', datetime.datetime.now())
 
 # Dataset 1
+start_time = time.time()
 print('\n--- Training on first dataset ---')
 prefs = collect_preferences(env, n_pairs=n_pairs, horizon=15, n_candidates=4)
 model.train(prefs, n_epochs=n_epochs)
@@ -66,13 +68,13 @@ prefs = collect_preferences(env, n_pairs=n_pairs, horizon=15, n_candidates=4)
 model.train(prefs, n_epochs=n_epochs)
 print('Training on fourth dataset complete after', time.time() - start_time, 'seconds')
 
-#dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
-#start_time = time.time()
-#env.reset(options={'new_data': dataset5})
-#print('\n--- Training on fifth dataset ---')
-#prefs = collect_preferences(env, n_pairs=n_pairs, horizon=15, n_candidates=4)
-#model.train(prefs, n_epochs=n_epochs)
-#print('Training on fifth dataset complete after', time.time() - start_time, 'seconds')
+# Dataset 5
+start_time = time.time()
+env.reset(options={'new_data': dataset5})
+print('\n--- Training on fifth dataset ---')
+prefs = collect_preferences(env, n_pairs=n_pairs, horizon=15, n_candidates=4)
+model.train(prefs, n_epochs=n_epochs)
+print('Training on fifth dataset complete after', time.time() - start_time, 'seconds')
 
 print(model.policy)
-torch.save(model.policy.state_dict(), 'model_weights/dpo_scheduler_5mil_30context.pt')
+torch.save(model.policy.state_dict(), 'model_weights/dpo_trained_model.pt')

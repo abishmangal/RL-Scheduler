@@ -78,19 +78,19 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
             'encoder_context': 30,
             'max_priority': 10,
             'time_quantum': 4,  # Add for updated env
-            'model_path': 'model_weights/ml_priority_scheduler_5mil_30context.pt'
+            'model_path': 'model_weights/ppo_trained_model.pt'
         }),
         'DPO': (DPOPriority, {
             'encoder_context': 30,
             'max_priority': 10,
             'time_quantum': 4,  # Add for updated env
-            'model_path': 'model_weights/dpo_scheduler_5mil_30context.pt'
+            'model_path': 'model_weights/dpo_trained_model.pt'
         }),
         'DQN': (DQNPriority, {
             'encoder_context': 30,
             'max_priority': 10,
             'time_quantum': 4,  # Add for updated env
-            'model_path': 'model_weights/dqn_scheduler_5mil_30context.pt'  # Fixed path
+            'model_path': 'model_weights/dqn_trained_model.pt'
         })
     }
     
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
-    dataset_path = "./dataset/dataset1.csv"
+    dataset_path = "./dataset/dataset_starvation_test.csv"
     
     if not os.path.exists(dataset_path):
         print(f"Dataset not found: {dataset_path}")
@@ -250,9 +250,9 @@ if __name__ == "__main__":
     
     # Check if model files exist before running
     model_paths = [
-        'model_weights/ml_priority_scheduler_5mil_30context.pt',
-        'model_weights/dpo_scheduler_5mil_30context.pt',
-        'model_weights/dqn_scheduler_5mil_30context.pt'
+        'model_weights/ppo_trained_model.pt',
+        'model_weights/dpo_trained_model.pt',
+        'model_weights/dqn_trained_model.pt'
     ]
     
     print("\nChecking model files:")

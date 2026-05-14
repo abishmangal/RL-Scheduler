@@ -10,6 +10,10 @@ class Scheduler(ABC):
             self.pids = data[:,0].astype(int)
             self.arrivals = data[:,1]
             self.instr_count = data[:,2]
+            # Build PID→data lookup (avoids fragile PID-as-index assumption)
+            self.pid_info = {}
+            for i, pid in enumerate(self.pids):
+                self.pid_info[int(pid)] = (float(self.arrivals[i]), int(self.instr_count[i]))
 
     def cpu_util(self):
         "Ranges from 0-1, can be converted to percentage"
@@ -18,35 +22,34 @@ class Scheduler(ABC):
 
     def throughput(self):
         """Number of processes completed per time unit"""
-        #print("data size", self.data.shape[0])
         return len(self.pids) / len(self.gantt)
 
     def turnaround_time(self):
-        """Average turnaround time - time between submission to completion"""
+        """Average turnaround time - time from arrival to completion"""
         turnaround_times = []
         for pid in self.pids:
-            first_index = self.gantt.index(pid)
+            arrival, _ = self.pid_info[int(pid)]
             last_index = len(self.gantt) - 1 - self.gantt[::-1].index(pid)
-            turnaround_times.append(last_index - first_index)
+            turnaround_times.append((last_index + 1) - arrival)
         return sum(turnaround_times) / len(turnaround_times)
 
     def waiting_time(self):
-        "Average waiting time - amount of time a process has been waiting in the ready queue not including execution and I/O"
+        """Average waiting time - turnaround time minus execution time"""
         waiting_times = []
         for pid in self.pids:
-            arrival_time = self.arrivals[pid]
-            instruction_count = self.arrivals[pid]
-            finish_time = len(self.gantt) - 1 - self.gantt[::-1].index(pid)
-            waiting_times.append(finish_time - arrival_time - instruction_count)
+            arrival, instr = self.pid_info[int(pid)]
+            last_index = len(self.gantt) - 1 - self.gantt[::-1].index(pid)
+            completion_time = last_index + 1
+            waiting_times.append((completion_time - arrival) - instr)
         return sum(waiting_times) / len(waiting_times)
 
     def response_time(self):
         "Average response time - amount of time it takes from when a request was submitted until the first response is produced"
         response_times = []
         for pid in self.pids:
-            arrival_time = self.arrivals[pid]
+            arrival, _ = self.pid_info[int(pid)]
             first_index = self.gantt.index(pid)
-            response_times.append(first_index - arrival_time)
+            response_times.append(first_index - arrival)
         return sum(response_times) / len(response_times)
     
     def time_run(self):
@@ -61,7 +64,7 @@ class Scheduler(ABC):
         self.stat_throughput = self.throughput()
         self.stat_turnaround_time = self.turnaround_time()
         self.stat_response_time = self.response_time()
-        self.stat_waiting_time = -self.waiting_time()
+        self.stat_waiting_time = self.waiting_time()
         self.stat_mean_runtime = self.stat_runtime / len(self.pids)
 
     def print_stats(self):
@@ -76,3 +79,5 @@ class Scheduler(ABC):
     @abstractmethod
     def run():
         pass
+
+    

@@ -192,16 +192,19 @@ class DPO:
 
         return -F.logsigmoid(logits).mean()
 
-    def train(self, dataset, n_epochs=5, verbose=True):
+    def train(self, dataset, n_epochs=5, verbose=True, eval_episodes=5):
         """Train the policy using collected preferences"""
         
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
-        print(f"\nStarting DPO training for {n_epochs} epochs...")
+        print(f"\n{'='*65}")
+        print(f"Starting DPO training for {n_epochs} epochs...")
         print(f"  Dataset size: {len(dataset)}")
         print(f"  Batch size: {self.batch_size}")
         print(f"  Beta: {self.beta}")
-        print("-" * 50)
+        print(f"{'='*65}")
+        print(f"{'Epoch':>6} {'Loss':>10} {'AvgRew':>10} {'MinRew':>8} {'MaxRew':>8} {'AvgLen':>8}")
+        print(f"{'-'*55}")
 
         for ep in range(n_epochs):
             total_loss = 0
@@ -218,11 +221,17 @@ class DPO:
                 total_loss += loss.item()
 
             avg_loss = total_loss / len(loader)
+
+            eval_results = self.evaluate(self.env, n_episodes=eval_episodes, verbose=False)
             
             if verbose:
-                print(f"Epoch {ep+1}/{n_epochs} | loss={avg_loss:.4f}")
+                print(f"{ep+1:6d} {avg_loss:10.4f} {eval_results['avg_reward']:10.2f} "
+                      f"{eval_results['min_reward']:8.2f} {eval_results['max_reward']:8.2f} "
+                      f"{eval_results['avg_length']:8.1f}")
 
-        print("DPO training finished.")
+        print(f"{'='*65}")
+        print(f"DPO training finished.")
+        print(f"{'='*65}\n")
 
     def get_action(self, obs, greedy=True):
         """Get action from trained policy"""
@@ -236,7 +245,7 @@ class DPO:
                 probs = F.softmax(logits, dim=-1)
                 return torch.multinomial(probs, 1).item()
 
-    def evaluate(self, env, n_episodes=5):
+    def evaluate(self, env, n_episodes=5, verbose=True):
         """Evaluate the trained policy"""
         self.policy.eval()
         rewards = []
@@ -267,9 +276,10 @@ class DPO:
             'max_reward': np.max(rewards)
         }
         
-        print(f"\nEvaluation Results ({n_episodes} episodes):")
-        print(f"  Avg Reward: {results['avg_reward']:.2f} ± {results['std_reward']:.2f}")
-        print(f"  Avg Length: {results['avg_length']:.1f}")
+        if verbose:
+            print(f"\nEvaluation Results ({n_episodes} episodes):")
+            print(f"  Avg Reward: {results['avg_reward']:.2f} ± {results['std_reward']:.2f}")
+            print(f"  Avg Length: {results['avg_length']:.1f}")
         
         return results
 

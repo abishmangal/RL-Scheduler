@@ -30,7 +30,7 @@ env = gym.make("gym_env:gym_env/PriorityScheduler-v0",
 model = DQN(env, lr=1e-3, gamma=0.99, epsilon_start=1.0, epsilon_end=0.05, 
             epsilon_decay=0.9995, batch_size=64, buffer_capacity=100000, target_update=1000)
 
-n_steps = 100
+n_steps = 100000
 
 print('Training DQN model with', n_steps, 'per dataset')
 start_time = time.time()

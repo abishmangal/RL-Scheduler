@@ -1,6 +1,6 @@
 """
 Simple DPO Training Script
-Matches the simplicity of the PPO training script
+Matches the structure of the PPO and DQN training scripts
 """
 
 import numpy as np
@@ -17,7 +17,6 @@ dataset1 = np.genfromtxt("./dataset/dataset1.csv", delimiter=',', skip_header=1)
 dataset2 = np.genfromtxt("./dataset/dataset2.csv", delimiter=',', skip_header=1)
 dataset3 = np.genfromtxt("./dataset/dataset3.csv", delimiter=',', skip_header=1)
 dataset4 = np.genfromtxt("./dataset/dataset4.csv", delimiter=',', skip_header=1)
-dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
 
 # Create environment with first dataset
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0", 
@@ -67,7 +66,7 @@ prefs = collect_preferences(env, n_pairs=n_pairs, horizon=15, n_candidates=4)
 model.train(prefs, n_epochs=n_epochs)
 print('Training on fourth dataset complete after', time.time() - start_time, 'seconds')
 
-#Dataset 5
+#dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
 #start_time = time.time()
 #env.reset(options={'new_data': dataset5})
 #print('\n--- Training on fifth dataset ---')

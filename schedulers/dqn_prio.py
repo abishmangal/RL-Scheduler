@@ -1,8 +1,14 @@
 """
-schedulers/dqn_prio.py
-======================
-CPU scheduler using a trained DQN Q-network to assign priorities.
-Updated for 9-feature environment with time quantum and dictionary tracking.
+dqn_prio.py — DQN-Based Priority Scheduler (Inference)
+========================================================
+
+This scheduler uses a trained DQN Q-network to assign priorities.
+
+At each process arrival, the Q-network maps the current observation to
+Q-values for every priority level; argmax Q gives the chosen priority.
+
+See ml_prio.py for detailed algorithm notes — the simulation loop and
+observation building are identical across all ML-based schedulers.
 """
 
 import sys
@@ -19,18 +25,10 @@ from priority_prediction.network import FeedForwardNN
 class DQNPriority(Scheduler):
     """
     Priority scheduler driven by a DQN-trained Q-network.
-    Matches the 9-feature environment (time quantum + dictionary tracking).
 
-    Features (9 total):
-    [0] PID
-    [1] Arrival time
-    [2] Total instructions
-    [3] Remaining instructions
-    [4] Current priority
-    [5] Quantum remaining
-    [6] Queue position (0 = front)
-    [7] Total wait time (accumulated)
-    [8] Time since last run
+    The Q-network outputs Q(s, a) for each priority action; the action
+    with the highest Q-value is selected (greedy, no exploration at
+    inference time).
 
     Parameters
     ----------
@@ -42,7 +40,6 @@ class DQNPriority(Scheduler):
     """
 
     def __init__(self, data, **kwargs):
-        # Initialize parent with data (sets pids, arrivals, instr_count)
         super().__init__(data)
         self.raw_data = data
         
@@ -54,18 +51,14 @@ class DQNPriority(Scheduler):
                 "DQNPriority requires 'encoder_context' and 'max_priority' kwargs."
             )
 
-        # Optional kwargs
         self.time_quantum = kwargs.get('time_quantum', 4)
         
-        # ============================================================
-        # DICTIONARY TRACKING FOR DYNAMIC STATE (9-feature observation)
-        # ============================================================
-        self.wait_since = {}      # When each process started waiting (timestamp)
-        self.total_wait = {}      # Accumulated waiting time (ticks)
-        self.last_run_time = {}   # When each process last ran (timestamp)
-        self.first_run_time = {}  # When each process first ran (for response time)
+        # Dictionary tracking mirrors the training environment
+        self.wait_since = {}
+        self.total_wait = {}
+        self.last_run_time = {}
+        self.first_run_time = {}
 
-        # Observation dimension: (encoder_context+1) * 9 features
         obs_dim = (self.encoder_context + 1) * 9
         self.model = FeedForwardNN(obs_dim, self.max_priority)
 
@@ -79,7 +72,6 @@ class DQNPriority(Scheduler):
             )
 
         checkpoint = torch.load(model_path, map_location='cpu')
-        # Handle both full checkpoint and just state_dict
         if 'q_net_state_dict' in checkpoint:
             self.model.load_state_dict(checkpoint['q_net_state_dict'])
         else:
@@ -93,8 +85,13 @@ class DQNPriority(Scheduler):
         print(f"[DQNPriority] Processes: {len(self.pids)}")
 
     def run(self):
-        """Run the scheduler simulation with dictionary tracking."""
-        # Build process list: [pid, arrival, total, remaining]
+        """
+        Run the scheduler simulation.
+
+        Admit arriving processes (querying the DQN model for each priority),
+        execute the highest-priority process for 1 tick, preempt/re-queue or
+        complete it.  Dictionary tracking mirrors the training environment.
+        """
         processes = []
         for i in range(self.raw_data.shape[0]):
             pid = int(self.raw_data[i, 0])
@@ -102,31 +99,26 @@ class DQNPriority(Scheduler):
             instr = int(self.raw_data[i, 2])
             processes.append([pid, arrival, instr, instr])
         
-        # Sort by arrival time
         processes.sort(key=lambda x: x[1])
 
         self.execution_queue = []
         data_pointer = 0
         time = 0
-        self.gantt = []  # Track which process runs at each time step
+        self.gantt = []
         
-        # Clear tracking dictionaries for new run
         self.wait_since.clear()
         self.total_wait.clear()
         self.last_run_time.clear()
         self.first_run_time.clear()
 
         while self.execution_queue or data_pointer < len(processes):
-            # Add all processes arriving at current time
             while (data_pointer < len(processes) and 
                    processes[data_pointer][1] == time):
                 proc = processes[data_pointer]
                 pid = proc[0]
                 
-                # Get priority from DQN model
                 priority = self._get_priority(data_pointer, processes, time)
                 
-                # Initialize dictionary tracking for new process
                 self.wait_since[pid] = time
                 self.total_wait[pid] = 0
                 self.last_run_time[pid] = 0
@@ -139,41 +131,27 @@ class DQNPriority(Scheduler):
                 data_pointer += 1
 
             if self.execution_queue:
-                # Get highest priority process (lowest number)
                 priority, pid, arrival, instr, remaining, quantum_rem = heapq.heappop(self.execution_queue)
                 
-                # ============================================================
-                # UPDATE WAIT TIME ACCUMULATION (BEFORE RUNNING)
-                # ============================================================
                 if pid in self.wait_since:
                     wait_accum = time - self.wait_since[pid]
                     self.total_wait[pid] = self.total_wait.get(pid, 0) + wait_accum
                 
-                # ============================================================
-                # UPDATE LAST RUN TIME
-                # ============================================================
                 self.last_run_time[pid] = time
                 
-                # ============================================================
-                # UPDATE FIRST RUN TIME (FOR RESPONSE TIME)
-                # ============================================================
                 if self.first_run_time.get(pid, 0) == 0:
                     self.first_run_time[pid] = time
                 
-                # Run for 1 time unit
                 self.gantt.append(pid)
                 remaining -= 1
                 quantum_rem -= 1
                 time += 1
                 
-                # Update wait_since for next wait period
                 if remaining > 0:
-                    self.wait_since[pid] = time  # Start new wait period after preemption
+                    self.wait_since[pid] = time
 
                 if remaining > 0:
-                    # Push back with updated remaining instructions and quantum
                     if quantum_rem == 0:
-                        # Quantum exhausted - recharge
                         heapq.heappush(
                             self.execution_queue,
                             (priority, pid, arrival, instr, remaining, self.time_quantum)
@@ -184,13 +162,10 @@ class DQNPriority(Scheduler):
                             (priority, pid, arrival, instr, remaining, quantum_rem)
                         )
                 else:
-                    # Process completed - clean up dictionaries
                     self.wait_since.pop(pid, None)
                     self.total_wait.pop(pid, None)
                     self.last_run_time.pop(pid, None)
-                    # Keep first_run_time for statistics (optional)
             else:
-                # No processes ready - idle tick
                 self.gantt.append(-1)
                 time += 1
 

@@ -5,6 +5,24 @@ import numpy as np
 
 
 class PrioritySchedulerEnv(gym.Env):
+    """
+    Reinforcement Learning environment for CPU priority scheduling.
+
+    The agent acts as a priority assigner: at each step, it receives a snapshot of
+    the scheduler state and picks a priority level (0 to max_priority-1) for the
+    next arriving process. Lower numbers = higher priority (min-heap).
+
+    Observation space: (encoder_context+1, 9) matrix.
+      Row 0           : next arriving process (not yet in queue).
+      Rows 1 onwards  : processes currently in the ready queue (up to encoder_context).
+      Per-row features: [PID, arrival_time, total_instructions, remaining_instructions,
+                         priority, quantum_remaining, queue_position, total_wait, time_since_last_run]
+
+    Action space: Discrete(max_priority) — assign a priority level to the new process.
+
+    Reward: weighted sum of penalties (turnaround, waiting, response, queue pressure,
+    starvation) plus a progress bonus. Negative penalties encourage shorter times.
+    """
     def __init__(self, data, encoder_context, max_priority, time_quantum=4):
         super().__init__()
 
@@ -39,6 +57,24 @@ class PrioritySchedulerEnv(gym.Env):
         return {}
 
     def _get_obs(self):
+        """
+        Build the 9-feature observation matrix from current scheduler state.
+
+        Row 0 describes the next process that will arrive (its remaining
+        instructions, the queue size it will face, etc.). Rows 1+ describe
+        each process currently in the ready queue, sorted by priority.
+
+        Features per row:
+          0 : PID
+          1 : arrival time
+          2 : total instruction count
+          3 : remaining instructions
+          4 : current priority (or -1 for the arriving process)
+          5 : remaining time quantum
+          6 : queue position index
+          7 : total accumulated wait time
+          8 : time since this process last ran
+        """
         obs = np.full((self.encoder_context + 1, 9), -1, dtype=np.int32)
 
         # Row 0: Next arriving process
@@ -79,6 +115,14 @@ class PrioritySchedulerEnv(gym.Env):
         return obs
 
     def reset(self, seed=None, options=None):
+        """
+        Reset the scheduler environment to its initial state.
+
+        Builds the process list from the dataset, clears all tracking
+        dictionaries (wait times, run times, etc.), and returns the
+        initial observation.  Supports swapping datasets via
+        options={'new_data': ...}.
+        """
         super().reset(seed=seed)
 
         if options and "new_data" in options:
@@ -118,6 +162,21 @@ class PrioritySchedulerEnv(gym.Env):
         return self._get_obs(), self._get_info()
 
     def step(self, action):
+        """
+        Advance the simulation by one decision step.
+
+        The flow is:
+          1. If processes are still arriving, fast-forward time to the next
+             arrival, executing the ready queue until then.
+          2. Take the agent's chosen action (priority level), push the new
+             process into the min-heap queue.
+          3. Compute reward components based on what happened during the
+             time advance (completions, turnarounds, response times, wait times).
+          4. Apply penalties for queue pressure, starvation, and a dense
+             per-tick penalty for processes awaiting their first run.
+          5. Add a progress bonus when completions happen or queue shrinks.
+          6. Clip and return the combined reward.
+        """
         new_completions = 0
         sum_turnarounds = 0      # Renamed for clarity (was new_turnarounds)
         sum_response_times = 0   # Renamed for clarity (was new_response_times)
@@ -196,10 +255,14 @@ class PrioritySchedulerEnv(gym.Env):
         # Normalize dense response penalty
         dense_response_penalty = -self.weights['response'] * dense_response_penalty
 
-        # Reward components
+        # Reward: each component is negative (penalty) except progress (bonus).
+        # Turnaround and waiting penalise completed processes.
+        # Sparse response penalises the first-run delay (once per process).
+        # Dense response penalises ongoing first-run delay every 10 ticks.
+        # Queue pressure penalises long queues.
+        # Starvation penalises processes waiting > threshold.
         turnaround_penalty = -self.weights['turnaround'] * sum_turnarounds / self.avg_instructions
         waiting_penalty = -self.weights['waiting'] * sum_waiting_times / self.avg_instructions
-        # Original sparse response penalty
         response_penalty = -self.weights['response'] * sum_response_times / self.avg_instructions
         queue_penalty = -self.weights['queue'] * queue_pressure
 
@@ -214,7 +277,7 @@ class PrioritySchedulerEnv(gym.Env):
                 starvation_penalty += self.weights['starvation'] * (excess / 50)
         starvation_penalty = -starvation_penalty
 
-        # Progress bonus
+        # Progress bonus: reward for completing processes and reducing queue
         if new_completions > 0:
             progress_bonus += self.weights['progress'] * new_completions
             avg_completion_time = self.total_turnaround / max(1, self.total_completed)
@@ -253,6 +316,21 @@ class PrioritySchedulerEnv(gym.Env):
         return self._get_obs(), reward, terminated, False, self._get_info()
 
     def _execute_for_time(self, time_available):
+        """
+        Run the ready queue for a given number of ticks.
+
+        This is the core simulation loop: processes are popped from the
+        min-heap (lowest priority number = highest priority), executed for
+        min(remaining_time, remaining_instructions, quantum_remaining) ticks,
+        then either completed or pushed back into the queue.
+
+        Tracks:
+          - turnaround time (completion - arrival)
+          - response time (first_run - arrival, detected once)
+          - waiting time (accumulated between runs)
+
+        Returns aggregated sums for the reward calculation.
+        """
         completed = 0
         total_turnaround = 0
         new_response = 0
@@ -286,6 +364,7 @@ class PrioritySchedulerEnv(gym.Env):
             quantum_rem -= run_time
 
             if remaining == 0:
+                # Process completed — record turnaround and clean up tracking
                 turnaround = self.current_time - arrival
                 self.completed_processes.append((pid, turnaround))
                 completed += 1
@@ -299,6 +378,7 @@ class PrioritySchedulerEnv(gym.Env):
                 self.last_response_penalty_time.pop(pid, None)
 
             elif quantum_rem == 0:
+                # Quantum exhausted — recharge and push back (preserve original priority)
                 original_priority = self.assigned_priority.get(pid, priority)
                 self.wait_since[pid] = self.current_time
                 heapq.heappush(
@@ -307,6 +387,7 @@ class PrioritySchedulerEnv(gym.Env):
                 )
 
             else:
+                # Preempted by timer — push back with remaining quantum
                 original_priority = self.assigned_priority.get(pid, priority)
                 heapq.heappush(
                     self.execution_queue,

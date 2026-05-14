@@ -1,6 +1,20 @@
 """
-DPO (Direct Preference Optimization) for CPU Priority Scheduling
-Current Environment Version - 9 features, includes time quantum
+Direct Preference Optimization (DPO) for CPU Priority Scheduling
+=================================================================
+Reference: Rafailov et al., "Direct Preference Optimization: Your Language
+           Model is Secretly a Reward Model", 2023.
+
+DPO avoids explicit reward modeling.  Instead of learning a reward function and
+then optimising the policy against it (as in RLHF), DPO directly optimises the
+policy from preference pairs (winner_action > loser_action) using a binary
+cross-entropy style loss.
+
+Algorithm:
+  1. Collect preference pairs by rolling out candidate actions from the same
+     state and comparing their cumulative rewards (winner = higher reward).
+  2. For each pair, the DPO loss increases the log-probability of the winner
+     relative to the loser, while staying close to a reference policy.
+  3. The reference policy is typically a pre-trained PPO model (frozen).
 """
 
 import copy
@@ -15,6 +29,10 @@ import gymnasium as gym
 
 # ---------------- MODEL ----------------
 class FeedForwardNN(nn.Module):
+    """
+    Simple feed-forward network with two 64-unit hidden layers.
+    Maps observation -> action logits (for the policy) or Q-values.
+    """
     def __init__(self, input_dim, output_dim):
         super().__init__()
         self.layer1 = nn.Linear(input_dim, 64)
@@ -29,7 +47,12 @@ class FeedForwardNN(nn.Module):
 
 # ---------------- DATASET ----------------
 class PreferenceDataset(Dataset):
-    """Stores preference pairs (observation, winner_action, loser_action)"""
+    """
+    Stores preference pairs (observation, winner_action, loser_action).
+
+    Each entry records a state and two actions — one that led to higher
+    cumulative reward (winner) and one that led to lower (loser).
+    """
     
     def __init__(self):
         self.obs = []
@@ -56,7 +79,12 @@ class PreferenceDataset(Dataset):
 def collect_preferences(env, n_pairs=1000, horizon=15, n_candidates=4, seed=42):
     """
     Collect preference pairs by comparing random action rollouts.
-    
+
+    For each state encountered, n_candidates random priority actions are
+    simulated for 'horizon' steps each (using random actions thereafter).
+    The action yielding the highest cumulative reward is the "winner", the
+    lowest is the "loser".  This pair becomes one training example.
+
     Args:
         env: Environment
         n_pairs: Number of preference pairs to collect
@@ -122,6 +150,13 @@ class DPO:
     """
     Direct Preference Optimization for CPU scheduling.
     
+    DPO re-parameterises the RLHF objective so the policy can be updated
+    directly from preferences without a separate reward model.
+
+    The loss increases the log-probability of preferred actions (winners)
+    relative to dispreferred ones (losers), while a KL penalty (controlled
+    by beta) keeps the policy close to a frozen reference model.
+
     Args:
         env: Environment
         ref_actor_path: Path to reference model weights (e.g., trained PPO)
@@ -146,7 +181,7 @@ class DPO:
 
         # Policy network (trainable)
         self.policy = FeedForwardNN(obs_dim, act_dim)
-        # Reference policy (frozen)
+        # Reference policy (frozen) — provides KL anchor
         self.ref_policy = FeedForwardNN(obs_dim, act_dim)
 
         # Load reference weights if provided
@@ -166,7 +201,12 @@ class DPO:
         self.opt = Adam(self.policy.parameters(), lr=lr)
 
     def _logp(self, model, obs, act):
-        """Compute log probability of actions under given model"""
+        """
+        Compute log π(action | observation) under a given model.
+
+        Uses log-softmax over action logits and indexes into the
+        chosen actions.
+        """
         logits = model(obs)
         logp = F.log_softmax(logits, dim=-1)
         return logp.gather(1, act.unsqueeze(1)).squeeze(1)
@@ -174,9 +214,13 @@ class DPO:
     def dpo_loss(self, obs, aw, al):
         """
         Compute DPO loss for a batch of preferences.
-        
-        Loss = -log σ(β * [(log π_θ(aw) - log π_ref(aw)) - 
-                           (log π_θ(al) - log π_ref(al))])
+
+        DPO loss formula (Rafailov et al. 2023):
+          L_DPO = -E[ log σ(β * (log π_θ(a_w) - log π_ref(a_w)
+                                 - log π_θ(a_l) + log π_ref(a_l))) ]
+
+        Intuition: increase π_θ(a_w) / π_ref(a_w) relative to
+        π_θ(a_l) / π_ref(a_l).  Beta controls how far π_θ can drift.
         """
         # Log probabilities for winner and loser actions under current policy
         lp_w = self._logp(self.policy, obs, aw)
@@ -192,7 +236,7 @@ class DPO:
         return -F.logsigmoid(logits).mean()
 
     def train(self, dataset, n_epochs=5, verbose=True, eval_episodes=5):
-        """Train the policy using collected preferences"""
+        """Train the policy using collected preference pairs."""
         
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
@@ -233,19 +277,28 @@ class DPO:
         print(f"{'='*65}\n")
 
     def get_action(self, obs, greedy=True):
-        """Get action from trained policy"""
+        """
+        Get action from the DPO-trained policy.
+
+        In greedy mode, returns argmax (highest-logit priority).
+        Otherwise samples from the softmax distribution (exploration).
+        """
         with torch.no_grad():
             x = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             logits = self.policy(x)
             if greedy:
                 return torch.argmax(logits, dim=1).item()
             else:
-                # Sample from distribution (exploration)
                 probs = F.softmax(logits, dim=-1)
                 return torch.multinomial(probs, 1).item()
 
     def evaluate(self, env, n_episodes=5, verbose=True):
-        """Evaluate the trained policy"""
+        """
+        Evaluate the trained policy over multiple episodes.
+
+        Runs the greedy policy end-to-end and reports average reward,
+        episode length, etc.
+        """
         self.policy.eval()
         rewards = []
         lengths = []
@@ -283,10 +336,16 @@ class DPO:
         return results
 
     def save(self, path):
+        """Save the policy network weights."""
         torch.save(self.policy.state_dict(), path)
         print(f"DPO saved → {path}")
 
     def load(self, path):
+        """
+        Load policy weights from a checkpoint.
+
+        Also syncs the reference policy so both start from the same point.
+        """
         self.policy.load_state_dict(torch.load(path, map_location='cpu'))
         self.ref_policy.load_state_dict(self.policy.state_dict())
         print(f"DPO loaded from {path}")

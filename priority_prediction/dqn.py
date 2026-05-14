@@ -5,11 +5,25 @@ Reference: Mnih et al., "Human-level control through deep reinforcement
            learning", Nature 2015.
 
 Key components:
-  - Q-Network: maps observation -> Q-values for each priority action
-  - Target Network: frozen copy, updated periodically for stability
-  - Replay Buffer: stores (s, a, r, s', done) transitions
-  - Epsilon-greedy exploration: decays over training
-  - Double DQN: uses online net to select action, target net to evaluate
+  - Q-Network: maps observation -> Q-values for each priority action.
+  - Target Network: frozen copy of the Q-network, updated periodically
+    to stabilise training (reduces moving-target problem).
+  - Replay Buffer: stores (s, a, r, s', done) transitions and samples
+    random mini-batches to break temporal correlations.
+  - Epsilon-greedy exploration: decays from 1.0 to 0.05 over training.
+  - Double DQN: uses online net to select actions, target net to evaluate
+    them, reducing Q-value overestimation.
+
+Algorithm:
+  1. Observe state s_t.
+  2. With probability epsilon, take random action; otherwise argmax Q(s_t, a).
+  3. Store (s_t, a_t, r_t, s_{t+1}, done) in replay buffer.
+  4. Sample a random mini-batch from the buffer.
+  5. Compute targets using Double DQN:
+       a* = argmax_a Q_online(s_{t+1}, a)
+       y = r + gamma * Q_target(s_{t+1}, a*) * (1 - done)
+  6. Update Q_online by MSE(y, Q_online(s_t, a_t)).
+  7. Every N steps, sync target net: Q_target = Q_online.
 """
 
 import numpy as np
@@ -29,7 +43,12 @@ from network import FeedForwardNN
 # ---------------------------------------------------------------------------
 
 class ReplayBuffer:
-    """Stores transitions and samples random mini-batches for training."""
+    """
+    Stores experience transitions and samples random mini-batches.
+
+    Breaking temporal correlations via random sampling is critical for
+    DQN stability — otherwise the network would overfit to recent experience.
+    """
 
     def __init__(self, capacity: int = 100_000):
         self.buffer = deque(maxlen=capacity)
@@ -66,6 +85,11 @@ class DQN:
     """
     Double DQN agent for CPU priority scheduling.
 
+    The agent learns a Q-function Q(s, a) that estimates the expected
+    cumulative reward of taking action a in state s.  The policy is
+    implicitly defined as the action with the highest Q-value (with
+    epsilon-greedy exploration during training).
+
     Args:
         env             : PrioritySchedulerEnv
         lr              : learning rate
@@ -98,9 +122,9 @@ class DQN:
         self.target_update = target_update
 
         # Calculate flattened observation dimension
-        obs_shape = env.observation_space.shape  # (encoder_context+1, 6)
-        obs_dim = obs_shape[0] * obs_shape[1]    # e.g., 31 * 6 = 186
-        act_dim = env.action_space.n             # max_priority (e.g., 10)
+        obs_shape = env.observation_space.shape
+        obs_dim = obs_shape[0] * obs_shape[1]
+        act_dim = env.action_space.n
 
         print(f"DQN Initialized:")
         print(f"  Observation shape: {obs_shape}")
@@ -109,7 +133,7 @@ class DQN:
 
         # Online Q-network (trained every step)
         self.q_net        = FeedForwardNN(obs_dim, act_dim)
-        # Target Q-network (frozen, synced periodically)
+        # Target Q-network (frozen copy, synced periodically for stability)
         self.target_net   = FeedForwardNN(obs_dim, act_dim)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()
@@ -124,7 +148,13 @@ class DQN:
     # ------------------------------------------------------------------
 
     def get_action(self, obs: np.ndarray, greedy: bool = False) -> int:
-        """Epsilon-greedy action selection."""
+        """
+        Select an action using epsilon-greedy.
+
+        With probability epsilon (during training), pick a random priority.
+        Otherwise, pick the action with the highest Q-value.
+        When greedy=True (evaluation), always pick argmax Q.
+        """
         if not greedy and random.random() < self.epsilon:
             return self.env.action_space.sample()
         
@@ -138,13 +168,22 @@ class DQN:
     # ------------------------------------------------------------------
 
     def update(self) -> float | None:
-        """Sample a mini-batch and perform one gradient step. Returns loss."""
+        """
+        Perform one gradient step using a random mini-batch from replay.
+
+        Double DQN target (Van Hasselt et al., 2016):
+          a*        = argmax_a Q_online(s', a)         — action selection
+          target(s) = r + gamma * Q_target(s', a*)     — action evaluation
+
+        This decouples selection from evaluation, reducing the
+        overestimation bias of standard DQN.
+        """
         if len(self.replay) < self.batch_size:
             return None
 
         obs, actions, rewards, next_obs, dones = self.replay.sample(self.batch_size)
 
-        # Current Q-values: Q(s, a)
+        # Current Q-values: Q(s, a) for the actions actually taken
         q_values = self.q_net(obs).gather(1, actions.unsqueeze(1)).squeeze(1)
 
         # Double DQN target:
@@ -172,6 +211,14 @@ class DQN:
         """
         Train the DQN for `n_steps` environment steps.
 
+        The loop:
+          1. Observe state, select action (epsilon-greedy).
+          2. Step the environment, store transition in replay buffer.
+          3. Sample a mini-batch and update Q-network.
+          4. Decay epsilon.
+          5. Periodically sync target network.
+          6. On episode end, log progress and reset.
+
         Args:
             n_steps: Total number of environment steps to train for
             log_interval: How often to print progress
@@ -194,7 +241,7 @@ class DQN:
         print(f"Buffer capacity: {self.replay.buffer.maxlen:,}")
         print(f"Batch size: {self.batch_size}")
         print(f"Target update: every {self.target_update} steps")
-        print(f"Epsilon: {self.epsilon:.3f} → {self.epsilon_end:.3f}")
+        print(f"Epsilon: {self.epsilon:.3f} -> {self.epsilon_end:.3f}")
         print("="*80)
         print(f"{'Step':>12} {'Episode':>8} {'Ep Reward':>12} {'Epsilon':>8} {'Loss':>10}")
         print("-" * 55)

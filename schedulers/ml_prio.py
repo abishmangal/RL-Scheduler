@@ -1,3 +1,25 @@
+"""
+ml_prio.py — ML-Based Priority Scheduler (PPO Inference)
+=========================================================
+
+This scheduler uses a trained PPO actor network to assign priorities to
+processes at submission time.  It replicates the observation-building logic
+from the training environment so the model sees the same input format.
+
+At each process arrival:
+  1. Build the 9-feature observation matrix from the current queue state.
+  2. Run the PPO actor (feed-forward network) to get priority logits.
+  3. Pick argmax (highest logit) as the priority.
+  4. Push the process into a min-heap ready queue.
+
+The queue is preemptive with a time quantum: each process runs for at most
+`time_quantum` ticks before being re-queued (unless it finishes first).
+
+Dictionary tracking (wait_since, total_wait, last_run_time, first_run_time)
+is maintained to populate the dynamic features of the observation —
+matching the training environment's _get_obs().
+"""
+
 import os
 import heapq
 import numpy as np
@@ -9,9 +31,12 @@ from priority_prediction.network import FeedForwardNN
 class MLPriority(Scheduler):
     """
     ML-based Priority Scheduler using trained PPO policy.
-    Environment: 9 features (PID, arrival, total, remaining, priority, quantum_rem,
-                 queue_position, total_wait_time, time_since_last_run).
-    Uses time quantum preemption with dictionary tracking for dynamic state.
+
+    Inherits from the abstract Scheduler base class, which provides
+    statistics calculation (turnaround, waiting, response time, etc.)
+    after run() completes.
+
+    The model is a FeedForwardNN trained via PPO in priority_prediction/.
     """
     
     def __init__(self, data, **kwargs):
@@ -72,7 +97,21 @@ class MLPriority(Scheduler):
         print(f"[MLPriority] Dictionary tracking enabled: wait_time, last_run_time")
     
     def run(self):
-        """Run the scheduler simulation with dictionary tracking"""
+        """
+        Run the scheduler simulation.
+
+        Main loop:
+          1. At each time tick, admit all processes whose arrival time == now.
+             For each admitted process, query the PPO model for a priority.
+          2. Pop the highest-priority process from the min-heap.
+          3. Execute it for 1 tick (or until preemption/completion).
+          4. If it still has work remaining, push it back into the heap
+             (with a fresh quantum if the current one expired).
+          5. If nothing is ready, record an idle tick (-1 in gantt).
+
+        Dictionary tracking is updated at each step to reflect current
+        wait times, last-run times, and first-run detection.
+        """
         
         # Build process list: [pid, arrival, total_instructions, remaining_instructions]
         processes = []
@@ -121,22 +160,13 @@ class MLPriority(Scheduler):
                 # Get highest priority process (lowest number)
                 priority, pid, arrival, total, remaining, quantum_rem = heapq.heappop(self.execution_queue)
                 
-                # ============================================================
-                # UPDATE WAIT TIME ACCUMULATION (BEFORE RUNNING)
-                # ============================================================
-                # Calculate wait time since last queue entry
+                # Accumulate wait time since this process was last enqueued
                 if pid in self.wait_since:
                     wait_accum = time - self.wait_since[pid]
                     self.total_wait[pid] = self.total_wait.get(pid, 0) + wait_accum
                 
-                # ============================================================
-                # UPDATE LAST RUN TIME
-                # ============================================================
                 self.last_run_time[pid] = time
                 
-                # ============================================================
-                # UPDATE FIRST RUN TIME (FOR RESPONSE TIME)
-                # ============================================================
                 if self.first_run_time.get(pid, 0) == 0:
                     self.first_run_time[pid] = time
                 
@@ -146,17 +176,13 @@ class MLPriority(Scheduler):
                 quantum_rem -= 1
                 time += 1
                 
-                # ============================================================
-                # UPDATE WAIT_SINCE FOR NEXT WAIT PERIOD
-                # ============================================================
-                # Process will go back to queue or complete
+                # If process still has work, start a new wait period
                 if remaining > 0:
-                    self.wait_since[pid] = time  # Start new wait period after preemption
+                    self.wait_since[pid] = time
                 
-                # If not finished, push back to queue with quantum tracking
                 if remaining > 0:
                     if quantum_rem == 0:
-                        # Quantum exhausted - recharge
+                        # Quantum exhausted — recharge
                         heapq.heappush(
                             self.execution_queue,
                             (priority, pid, arrival, total, remaining, self.time_quantum)
@@ -167,18 +193,23 @@ class MLPriority(Scheduler):
                             (priority, pid, arrival, total, remaining, quantum_rem)
                         )
                 else:
-                    # Process completed - clean up dictionaries
+                    # Process completed — clean up tracking dictionaries
                     self.wait_since.pop(pid, None)
                     self.total_wait.pop(pid, None)
                     self.last_run_time.pop(pid, None)
-                    # Keep first_run_time for statistics (optional)
             else:
-                # No processes ready - idle tick
+                # No processes ready — idle tick
                 self.gantt.append(-1)
                 time += 1
     
     def _get_priority(self, data_pointer: int, processes: list, current_time: int) -> int:
-        """Get priority prediction from ML model using 9-feature observation"""
+        """
+        Query the PPO model for a priority assignment.
+
+        Builds the 9-feature observation matching the training environment,
+        flattens it, and runs it through the actor network.  Returns the
+        argmax priority (discrete action).
+        """
         obs = self._get_observation(data_pointer, processes, current_time)
         flat = obs.ravel().astype(np.float32)
         tensor = torch.tensor(flat, dtype=torch.float32)
@@ -191,18 +222,24 @@ class MLPriority(Scheduler):
     
     def _get_observation(self, data_pointer: int, processes: list, current_time: int) -> np.ndarray:
         """
-        Build observation (9 features — matches the gym env).
+        Build the 9-feature observation that matches the training environment.
+
         Shape: (encoder_context + 1, 9)
-        Features:
-        [0] PID
-        [1] Arrival time
-        [2] Total instructions
-        [3] Remaining instructions
-        [4] Current priority
-        [5] Quantum remaining
-        [6] Queue position (0 = front)
-        [7] Total wait time (accumulated)
-        [8] Time since last run
+          Row 0       = next arriving process (not yet in queue)
+          Rows 1+     = processes currently in the ready queue
+
+        Features per row:
+          [0] PID
+          [1] Arrival time
+          [2] Total instructions
+          [3] Remaining instructions
+          [4] Current priority (or -1 for the arriving process)
+          [5] Quantum remaining
+          [6] Queue position (0 = front)
+          [7] Total wait time (accumulated)
+          [8] Time since last run
+
+        This mirrors gym_env/envs/priority_scheduler.py:_get_obs().
         """
         obs = np.full((self.encoder_context + 1, 9), -1, dtype=np.float32)
         

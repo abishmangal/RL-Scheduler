@@ -1,37 +1,38 @@
-
 import numpy as np
 from .scheduler import Scheduler
 from collections import deque
 
 class MLQ(Scheduler):
     def __init__(self, data, **kwargs):
-        super().__init__(data=data)
-        self.queues = [deque(), deque(), deque()]  # Three priority queues
+        super().__init__(data=None)
+        raw = np.array(data)
+        self.processes = [[int(r[0]), int(r[1]), int(r[2]), int(r[2])] for r in raw]
+        self.pids = raw[:, 0].astype(int)
+        self.arrivals = raw[:, 1]
+        self.instr_count = raw[:, 2]
+        self.queues = [deque(), deque(), deque()]
 
     def run(self):
         time = 0
-        while any(queue for queue in self.queues) or self.data.size > 0:
-            # Enqueue new arrivals to appropriate queues
-            while self.data.size > 0 and self.data[0, 1] <= time:
-                priority = np.random.randint(0,2)  # Assuming priority is in the 4th column
-                self.queues[priority].append(self.data[0])
-                self.data = np.delete(self.data, 0, axis=0)
+        ptr = 0
+        while any(self.queues) or ptr < len(self.processes):
+            while ptr < len(self.processes) and self.processes[ptr][1] <= time:
+                priority = np.random.randint(0, 3)
+                self.queues[priority].append(self.processes[ptr])
+                ptr += 1
 
-            # Process the highest priority non-empty queue
-            do_work = False
+            worked = False
             for queue in self.queues:
                 if queue:
-                    do_work = True
-                    process = queue.popleft()
-                    self.gantt.append(int(process[0]))
-                    process[2] -= 1  # Decrement remaining time
+                    worked = True
+                    proc = queue.popleft()
+                    self.gantt.append(int(proc[0]))
+                    proc[3] -= 1
+                    if proc[3] > 0:
+                        queue.append(proc)
+                    break
 
-                    if process[2] > 0:
-                        queue.appendleft(process)  # Requeue the process
-                    break  # Process only one process at a time
-            
-            if do_work == False:
-                self.gantt.append(-1)  # If all queues are empty, log idle time
+            if not worked:
+                self.gantt.append(-1)
 
-            time += 1  # Increment the global time
-        return
+            time += 1

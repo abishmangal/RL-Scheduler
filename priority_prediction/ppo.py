@@ -40,23 +40,30 @@ class PPO:
         self.cov_mat = torch.diag(self.cov_var)
 
     def _init_hyperparameters(self):
-        # Default hyperparameter values - NEED TO CHANGE
-        self.timesteps_per_batch = 100000
-        self.max_timesteps_per_episode = 10000
-        self.gamma = 0.95 # reward decay
-        self.n_updates_per_iteration = 5
-        self.clip = 0.2 # recommended by PPO paper
-        self.lr = 0.005
+        self.timesteps_per_batch = 2048
+        self.max_timesteps_per_episode = 200
+        self.gamma = 0.99
+        self.n_updates_per_iteration = 10
+        self.clip = 0.2
+        self.lr = 3e-4
 
     def learn(self, n_steps):
+        import time, datetime
+
         n = 0 # number of steps taken
+        iteration = 0
+        learn_start = time.time()
+
         while n < n_steps: # ALG STEP 2
+            iter_start = time.time()
+
             # ALG STEP 3
-            batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
+            batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens, batch_rews = self.rollout()
 
             # Calculate how many timesteps collected in batch
             n += np.sum(batch_lens)
-            
+            iteration += 1
+
             # Calculate V_{phi, k}
             V, _ = self.evaluate(batch_obs, batch_acts)
 
@@ -68,6 +75,8 @@ class PPO:
             A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
             # ALG STEP 6 & 7
+            actor_loss_sum = 0.0
+            critic_loss_sum = 0.0
             for _ in range(self.n_updates_per_iteration):
                 # Calculate pi_theta(a_t | s_t)
                 V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
@@ -84,6 +93,9 @@ class PPO:
                 critic_loss = MSELoss()(V, batch_rtgs)
                 #encoder_loss = (-torch.min(surr1, surr2)).mean()
                 
+                actor_loss_sum += actor_loss.item()
+                critic_loss_sum += critic_loss.item()
+
                 # Perform backward propogation for actor network
                 self.actor_optim.zero_grad()
                 actor_loss.backward(retain_graph=True)
@@ -100,6 +112,28 @@ class PPO:
                 encoder_loss.backward()
                 self.obs_enc_optim.step()
                 '''
+
+            avg_actor_loss = actor_loss_sum / self.n_updates_per_iteration
+            avg_critic_loss = critic_loss_sum / self.n_updates_per_iteration
+
+            # Reward stats from the batch
+            ep_rew_sums = [sum(ep) for ep in batch_rews]
+            mean_rew = np.mean(ep_rew_sums)
+            min_rew = np.min(ep_rew_sums)
+            max_rew = np.max(ep_rew_sums)
+            mean_ep_len = np.mean(batch_lens)
+
+            iter_time = time.time() - iter_start
+            elapsed = time.time() - learn_start
+            remaining = (elapsed / n) * (n_steps - n) if n > 0 else 0
+            pct = min(100.0, 100.0 * n / n_steps)
+            print(
+                f"  Iter {iteration:3d} | Steps {int(n):6d}/{n_steps} ({pct:5.1f}%) | "
+                f"Time {iter_time:.1f}s | ETA {remaining:.0f}s | "
+                f"Rew {mean_rew:.1f} [{min_rew:.1f}, {max_rew:.1f}] | "
+                f"EpLen {mean_ep_len:.0f} | "
+                f"ALoss {avg_actor_loss:.4f} | CLoss {avg_critic_loss:.4f}"
+            )
 
     def rollout(self):
         # batch data
@@ -154,7 +188,7 @@ class PPO:
         batch_rtgs = self.compute_rtgs(batch_rews)
 
         # Return batch data
-        return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
+        return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens, batch_rews
 
     def get_action(self, obs):
         # encode the observations and query the actor for mean action

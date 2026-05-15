@@ -1,33 +1,50 @@
 from .scheduler import Scheduler
 from collections import deque
+import numpy as np
 
 class FIFO(Scheduler):
     def __init__(self, data, **kwargs):
         super().__init__(data=data)
 
     def run(self):
+        # ✅ Work on a local copy, don't modify self.data
+        # Build process list from self.data (don't modify original)
+        processes = []
+        for i in range(self.data.shape[0]):
+            processes.append([
+                int(self.data[i, 0]),  # pid
+                int(self.data[i, 1]),  # arrival
+                int(self.data[i, 2])   # instructions
+            ])
+        
+        # Sort by arrival time
+        processes.sort(key=lambda x: x[1])
+        
         deq = deque()
         time = 0
+        ptr = 0  # Pointer to track which processes have been added
+        self.gantt = []
 
-        while len(deq) != 0 or self.data.size > 0: # if queue is not empty or data is not empty
+        while len(deq) != 0 or ptr < len(processes):
+            # Add all processes arriving at current time (non-destructive)
+            while ptr < len(processes) and processes[ptr][1] == time:
+                deq.append(processes[ptr])
+                ptr += 1  # ✅ Just increment pointer, don't delete!
 
-            while self.data.size > 0 and self.data[0,1] == time: # add all processes to queue that arrive at 'time'
-                deq.append(self.data[0])
-                self.data = self.data[1:]
-
-            if deq: # if queue is not empty
+            if deq:
                 process = deq.popleft()
-                self.gantt.append(int(process[0])) # store PID in gantt
-                process[2] -= 1 # decrease InstructionCount
+                self.gantt.append(process[0])  # Store PID
+                process[2] -= 1  # Decrease InstructionCount
                 
-                if process[2] == 0: # if task is complete, move on
+                if process[2] == 0:
+                    # Process complete - don't add back
                     time += 1
                     continue
-                else: # else add it to the front of queue
-                    deq.appendleft(process) 
-
-    
-            else: # if qeueue is empty, then store -1 in the gantt chart (list)
+                else:
+                    # Add back to front of queue
+                    deq.appendleft(process)
+            else:
+                # Queue empty - idle
                 self.gantt.append(-1)
 
             time += 1

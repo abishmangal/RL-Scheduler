@@ -23,7 +23,8 @@ dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0", 
                data=dataset1, 
                encoder_context=30, 
-               max_priority=10)
+               max_priority=10,
+               time_quantum=4)
 
 # Create DPO model (optionally load PPO as reference)
 model = DPO(env, ref_actor_path=None, beta=0.1, lr=1e-4, batch_size=64)

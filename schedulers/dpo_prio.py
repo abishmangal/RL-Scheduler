@@ -1,30 +1,28 @@
 """
 schedulers/dpo_prio.py
 ======================
-CPU scheduler using DPO-trained policy for initial environment (5 features)
+CPU scheduler using DPO-trained policy (6 features, time quantum)
 """
-
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'priority_prediction'))
 
 from .scheduler import Scheduler
 import heapq
 import numpy as np
 import torch
-from network import FeedForwardNN
+from priority_prediction.network import FeedForwardNN
 
 
 class DPOPriority(Scheduler):
     """
     Priority scheduler driven by a DPO-trained policy.
-    For initial environment: 5 features, NO time quantum, NO aging.
+    Environment: 6 features (PID, arrival, total, remaining, priority, quantum_rem).
+    Uses time quantum preemption. Models must be trained on 6-feature env.
     
     Parameters
     ----------
     data            : np.ndarray — process table [PID, ArrivalTime, Instructions]
     encoder_context : int        — queue slots in observation
     max_priority    : int        — discrete priority levels
+    time_quantum    : int        — time slice before preemption
     model_path      : str        — path to saved DPO weights (.pt)
     """
 
@@ -43,8 +41,10 @@ class DPOPriority(Scheduler):
                 "DPOPriority requires 'encoder_context' and 'max_priority' kwargs."
             )
 
-        # Observation dimension: (encoder_context+1) * 5 (5 features)
-        obs_dim = (self.encoder_context + 1) * 5
+        self.time_quantum = kwargs.get('time_quantum', 4)
+
+        # Observation dimension: (encoder_context+1) * 6 (matches gym env)
+        obs_dim = (self.encoder_context + 1) * 6
         self.model = FeedForwardNN(obs_dim, self.max_priority)
 
         model_path = kwargs.get('model_path', 'model_weights/dpo_scheduler.pt')
@@ -67,7 +67,7 @@ class DPOPriority(Scheduler):
         self.model.eval()
         
         print(f"[DPOPriority] Loaded from: {model_path}")
-        print(f"[DPOPriority] Observation dim: {obs_dim} (5 features)")
+        print(f"[DPOPriority] Observation dim: {obs_dim} (6 features with time_quantum={self.time_quantum})")
         print(f"[DPOPriority] Processes: {len(self.pids)}")
 
     def run(self):
@@ -100,24 +100,30 @@ class DPOPriority(Scheduler):
                 priority = self._get_priority(data_pointer, processes, time)
                 heapq.heappush(
                     self.execution_queue,
-                    (priority, proc[0], proc[1], proc[2], proc[3])
+                    (priority, proc[0], proc[1], proc[2], proc[3], self.time_quantum)
                 )
                 data_pointer += 1
 
             if self.execution_queue:
-                priority, pid, arrival, total, remaining = heapq.heappop(self.execution_queue)
+                priority, pid, arrival, total, remaining, quantum_rem = heapq.heappop(self.execution_queue)
                 
                 # Record in gantt chart
                 self.gantt.append(pid)
                 remaining -= 1
+                quantum_rem -= 1
                 time += 1
 
                 if remaining > 0:
-                    # Push back with updated remaining instructions
-                    heapq.heappush(
-                        self.execution_queue,
-                        (priority, pid, arrival, total, remaining)
-                    )
+                    if quantum_rem == 0:
+                        heapq.heappush(
+                            self.execution_queue,
+                            (priority, pid, arrival, total, remaining, self.time_quantum)
+                        )
+                    else:
+                        heapq.heappush(
+                            self.execution_queue,
+                            (priority, pid, arrival, total, remaining, quantum_rem)
+                        )
             else:
                 # No processes ready - idle tick
                 self.gantt.append(-1)
@@ -136,23 +142,23 @@ class DPOPriority(Scheduler):
 
     def _get_observation(self, data_pointer: int, processes: list, current_time: int) -> np.ndarray:
         """
-        Build observation for initial environment (5 features).
-        Shape: (encoder_context + 1, 5)
-        Features: [PID, arrival, total_instructions, remaining_instructions, priority]
+        Build observation (6 features — matches the gym env with time quantum).
+        Shape: (encoder_context + 1, 6)
+        Features: [PID, arrival, total_instructions, remaining_instructions, priority, quantum_rem]
         """
-        obs = np.full((self.encoder_context + 1, 5), -1, dtype=np.float32)
+        obs = np.full((self.encoder_context + 1, 6), -1, dtype=np.float32)
 
         # Row 0: next arriving process
         if data_pointer < len(processes):
             proc = processes[data_pointer]
             obs[0, :4] = [proc[0], proc[1], proc[2], proc[3]]
-            # obs[0, 4] stays -1 (no priority yet)
+            obs[0, 5] = self.time_quantum  # quantum for arriving process
 
         # Rows 1+: current queue snapshot
-        for i, (priority, pid, arrival, total, remaining) in enumerate(self.execution_queue):
+        for i, (priority, pid, arrival, total, remaining, quantum_rem) in enumerate(self.execution_queue):
             if i >= self.encoder_context:
                 break
-            obs[i + 1] = [pid, arrival, total, remaining, priority]
+            obs[i + 1] = [pid, arrival, total, remaining, priority, quantum_rem]
 
         return obs
 
@@ -174,7 +180,8 @@ if __name__ == "__main__":
         test_data,
         encoder_context=30,
         max_priority=10,
-        model_path="model_weights/dpo_scheduler.pt"  # Update path
+        time_quantum=4,
+        model_path="model_weights/dpo_scheduler_5mil_30context.pt"
     )
     
     scheduler.time_run()

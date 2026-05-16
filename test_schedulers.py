@@ -1,7 +1,7 @@
 """
-Scheduler Comparison Script for Initial Environment
+Scheduler Comparison Script (Time Quantum Enabled)
 Tests: FIFO, Round Robin, CFS, MLQ, MFQ, PPO, DPO
-Environment: 5 features, NO time quantum, NO aging
+Environment: 6 features, WITH time quantum, NO aging
 """
 
 import os
@@ -25,13 +25,13 @@ CSV = "./dataset/dataset1.csv"
 
 ENCODER_CONTEXT = 30
 MAX_PRIORITY = 10
-# Note: NO time_quantum or aging parameters for initial environment
+TIME_QUANTUM = 4  # Time quantum for preemptive scheduling
 
 # Model paths (update these to your actual model paths)
 MODEL_PATHS = {
     'PPO': 'model_weights/ml_priority_scheduler_5mil_30context.pt',
-    'DPO': 'model_weights/dpo_scheduler.pt',
-    'DQN': 'model_weights/dqn_scheduler.pt'
+    'DPO': 'model_weights/dpo_scheduler_5mil_30context.pt',
+    'DQN': 'model_weights/dqn_scheduler_5mil_30context.pt'
 }
 
 # -----------------------------
@@ -68,7 +68,7 @@ if data.ndim == 1:
 
 print(f"\nDataset: {CSV}")
 print(f"Processes: {data.shape[0]}")
-print(f"Environment: 5 features (no time quantum, no aging)")
+print(f"Environment: 6 features (with time quantum={TIME_QUANTUM}, no aging)")
 print()
 
 # -----------------------------
@@ -88,6 +88,7 @@ results['PPO'] = test_scheduler(
     "ML Priority (PPO)", MLPriority, data,
     encoder_context=ENCODER_CONTEXT,
     max_priority=MAX_PRIORITY,
+    time_quantum=TIME_QUANTUM,
     model_path=MODEL_PATHS['PPO']
 )
 
@@ -95,6 +96,7 @@ results['DPO'] = test_scheduler(
     "DPO Priority", DPOPriority, data,
     encoder_context=ENCODER_CONTEXT,
     max_priority=MAX_PRIORITY,
+    time_quantum=TIME_QUANTUM,
     model_path=MODEL_PATHS['DPO']
 )
 

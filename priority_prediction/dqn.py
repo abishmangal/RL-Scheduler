@@ -98,8 +98,8 @@ class DQN:
         self.target_update = target_update
 
         # Calculate flattened observation dimension
-        obs_shape = env.observation_space.shape  # (encoder_context+1, 5)
-        obs_dim = obs_shape[0] * obs_shape[1]    # e.g., 31 * 5 = 155
+        obs_shape = env.observation_space.shape  # (encoder_context+1, 6)
+        obs_dim = obs_shape[0] * obs_shape[1]    # e.g., 31 * 6 = 186
         act_dim = env.action_space.n             # max_priority (e.g., 10)
 
         print(f"DQN Initialized:")

@@ -20,7 +20,8 @@ print(f"Loaded {len(dataset)} processes")
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0",
                data=dataset,
                encoder_context=30,
-               max_priority=10)
+               max_priority=10,
+               time_quantum=4)
 
 # Access the unwrapped environment to get internal attributes
 unwrapped_env = env.unwrapped

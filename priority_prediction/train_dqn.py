@@ -23,13 +23,14 @@ dataset5 = np.genfromtxt("./dataset/dataset5.csv", delimiter=',', skip_header=1)
 env = gym.make("gym_env:gym_env/PriorityScheduler-v0", 
                data=dataset1, 
                encoder_context=30, 
-               max_priority=10)
+               max_priority=10,
+               time_quantum=4)
 
 # Create DQN model
 model = DQN(env, lr=1e-3, gamma=0.99, epsilon_start=1.0, epsilon_end=0.05, 
             epsilon_decay=0.9995, batch_size=64, buffer_capacity=100000, target_update=1000)
 
-n_steps = 5000000  # 5 million steps per dataset
+n_steps = 100
 
 print('Training DQN model with', n_steps, 'per dataset')
 start_time = time.time()

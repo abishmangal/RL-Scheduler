@@ -1,6 +1,6 @@
 """
 DPO (Direct Preference Optimization) for CPU Priority Scheduling
-Initial Environment Version - 5 features, no time quantum, no aging
+Current Environment Version - 6 features, includes time quantum
 """
 
 import copy

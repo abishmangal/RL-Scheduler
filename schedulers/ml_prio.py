@@ -9,7 +9,8 @@ from priority_prediction.network import FeedForwardNN
 class MLPriority(Scheduler):
     """
     ML-based Priority Scheduler using trained PPO policy.
-    For initial environment: 5 features, NO time quantum, NO aging.
+    Environment: 6 features (PID, arrival, total, remaining, priority, quantum_rem).
+    Uses time quantum preemption. Models must be trained on 6-feature env.
     """
     
     def __init__(self, data, **kwargs):
@@ -32,9 +33,10 @@ class MLPriority(Scheduler):
         
         # Optional kwargs
         self.model_path = kwargs.get('model_path', 'model_weights/ml_priority_scheduler_5mil_30context.pt')
+        self.time_quantum = kwargs.get('time_quantum', 4)
         
-        # Build observation dimension: (encoder_context+1) * 5 features
-        obs_dim = (self.encoder_context + 1) * 5
+        # Build observation dimension: (encoder_context+1) * 6 features
+        obs_dim = (self.encoder_context + 1) * 6
         
         # Load model
         self.model = FeedForwardNN(obs_dim, self.max_priority)
@@ -57,7 +59,7 @@ class MLPriority(Scheduler):
         self.model.eval()
         
         print(f"[MLPriority] Loaded model from: {self.model_path}")
-        print(f"[MLPriority] Observation dim: {obs_dim}")
+        print(f"[MLPriority] Observation dim: {obs_dim} (6 features with time_quantum={self.time_quantum})")
     
     def run(self):
         """Run the scheduler simulation"""
@@ -83,25 +85,33 @@ class MLPriority(Scheduler):
                 priority = self._get_priority(data_pointer, processes)
                 heapq.heappush(
                     self.execution_queue,
-                    (priority, proc[0], proc[1], proc[2], proc[3])
+                    (priority, proc[0], proc[1], proc[2], proc[3], self.time_quantum)
                 )
                 data_pointer += 1
             
             if self.execution_queue:
                 # Get highest priority process (lowest number)
-                priority, pid, arrival, total, remaining = heapq.heappop(self.execution_queue)
+                priority, pid, arrival, total, remaining, quantum_rem = heapq.heappop(self.execution_queue)
                 
                 # Run for 1 time unit
                 self.gantt.append(pid)
                 remaining -= 1
+                quantum_rem -= 1
                 time += 1
                 
-                # If not finished, push back to queue
+                # If not finished, push back to queue with quantum tracking
                 if remaining > 0:
-                    heapq.heappush(
-                        self.execution_queue,
-                        (priority, pid, arrival, total, remaining)
-                    )
+                    if quantum_rem == 0:
+                        # Quantum exhausted - recharge
+                        heapq.heappush(
+                            self.execution_queue,
+                            (priority, pid, arrival, total, remaining, self.time_quantum)
+                        )
+                    else:
+                        heapq.heappush(
+                            self.execution_queue,
+                            (priority, pid, arrival, total, remaining, quantum_rem)
+                        )
             else:
                 # No processes ready - idle tick
                 self.gantt.append(-1)
@@ -121,22 +131,22 @@ class MLPriority(Scheduler):
     
     def _get_observation(self, data_pointer: int, processes: list) -> np.ndarray:
         """
-        Build observation for initial environment (5 features).
-        Shape: (encoder_context + 1, 5)
-        Features: [PID, arrival, total_instructions, remaining_instructions, priority]
+        Build observation (6 features — matches the gym env with time quantum).
+        Shape: (encoder_context + 1, 6)
+        Features: [PID, arrival, total_instructions, remaining_instructions, priority, quantum_rem]
         """
-        obs = np.full((self.encoder_context + 1, 5), -1, dtype=np.float32)
+        obs = np.full((self.encoder_context + 1, 6), -1, dtype=np.float32)
         
         # Row 0: next arriving process (not yet in queue)
         if data_pointer < len(processes):
             proc = processes[data_pointer]
             obs[0, :4] = [proc[0], proc[1], proc[2], proc[3]]
-            # obs[0, 4] stays -1 (no priority assigned yet)
+            obs[0, 5] = self.time_quantum  # quantum for arriving process
         
         # Rows 1+: current queue snapshot (in priority order)
-        for i, (priority, pid, arrival, total, remaining) in enumerate(self.execution_queue):
+        for i, (priority, pid, arrival, total, remaining, quantum_rem) in enumerate(self.execution_queue):
             if i >= self.encoder_context:
                 break
-            obs[i + 1] = [pid, arrival, total, remaining, priority]
+            obs[i + 1] = [pid, arrival, total, remaining, priority, quantum_rem]
         
         return obs

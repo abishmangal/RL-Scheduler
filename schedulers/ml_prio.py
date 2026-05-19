@@ -61,6 +61,9 @@ class MLPriority(Scheduler):
         self.model_path = kwargs.get('model_path', 'model_weights/ppo_trained_model.pt')
         self.time_quantum = kwargs.get('time_quantum', 4)
         
+        # Priority history for Gantt chart visualization
+        self.gantt_priority = []
+        
         # ============================================================
         # DICTIONARY TRACKING FOR DYNAMIC STATE (9-feature observation)
         # ============================================================
@@ -128,6 +131,8 @@ class MLPriority(Scheduler):
         time = 0
         self.gantt = []
         
+        self.gantt_priority.clear()
+        
         # Clear tracking dictionaries for new run
         self.wait_since.clear()
         self.total_wait.clear()
@@ -172,6 +177,7 @@ class MLPriority(Scheduler):
                 
                 # Run for 1 time unit
                 self.gantt.append(pid)
+                self.gantt_priority.append(priority)
                 remaining -= 1
                 quantum_rem -= 1
                 time += 1
@@ -200,6 +206,7 @@ class MLPriority(Scheduler):
             else:
                 # No processes ready — idle tick
                 self.gantt.append(-1)
+                self.gantt_priority.append(-1)
                 time += 1
     
     def _get_priority(self, data_pointer: int, processes: list, current_time: int) -> int:

@@ -3,8 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 
-def plot_gantt(gantt_data, scheduler_name, num_processes=50, save_path=None):
-    """Plot Gantt chart for a scheduler"""
+def plot_gantt(gantt_data, scheduler_name, num_processes=50, save_path=None, gantt_priority=None):
+    """Plot Gantt chart for a scheduler, with optional priority annotations"""
     
     fig, ax = plt.subplots(figsize=(15, 6))
     
@@ -17,34 +17,59 @@ def plot_gantt(gantt_data, scheduler_name, num_processes=50, save_path=None):
     colors = plt.cm.tab20(np.linspace(0, 1, len(unique_pids)))
     color_map = {pid: colors[i % len(colors)] for i, pid in enumerate(unique_pids)}
     
-    time_step = 0
+    # Build a priority-per-pid lookup for coloring
+    has_priority = gantt_priority is not None and len(gantt_priority) == len(gantt_data)
+    if has_priority:
+        pid_priority = {}
+        for pid, pri in zip(gantt_data, gantt_priority):
+            if pid != -1 and pri != -1:
+                pid_priority[pid] = pri
+    
     current_start = 0
     current_pid = gantt_data[0] if gantt_data else -1
+    current_pri = gantt_priority[0] if has_priority else None
     
     for i, pid in enumerate(gantt_data):
-        if pid != current_pid:
-            # Draw segment for previous process
+        pri_at_i = gantt_priority[i] if has_priority else None
+        if pid != current_pid or (has_priority and pri_at_i != current_pri):
             if current_pid != -1 and current_pid in color_map:
-                ax.barh(current_pid, i - current_start, left=current_start, 
-                       height=0.8, color=color_map[current_pid], edgecolor='black', linewidth=0.5)
+                bar = ax.barh(current_pid, i - current_start, left=current_start,
+                             height=0.8, color=color_map[current_pid],
+                             edgecolor='black', linewidth=0.5)
+                if has_priority and current_pri is not None and current_pri != -1:
+                    mid = current_start + (i - current_start) / 2
+                    ax.text(mid, current_pid, f'P{int(current_pri)}',
+                           ha='center', va='center', fontsize=7, fontweight='bold',
+                           color='white' if current_pri > 5 else 'black')
             current_start = i
             current_pid = pid
+            if has_priority:
+                current_pri = pri_at_i
     
-    # Draw last segment
     if current_pid != -1 and current_pid in color_map:
-        ax.barh(current_pid, len(gantt_data) - current_start, left=current_start,
-               height=0.8, color=color_map[current_pid], edgecolor='black', linewidth=0.5)
+        bar = ax.barh(current_pid, len(gantt_data) - current_start, left=current_start,
+                     height=0.8, color=color_map[current_pid],
+                     edgecolor='black', linewidth=0.5)
+        if has_priority and current_pri is not None and current_pri != -1:
+            mid = current_start + (len(gantt_data) - current_start) / 2
+            ax.text(mid, current_pid, f'P{int(current_pri)}',
+                   ha='center', va='center', fontsize=7, fontweight='bold',
+                   color='white' if current_pri > 5 else 'black')
     
     ax.set_xlabel('Time', fontsize=12)
     ax.set_ylabel('Process ID', fontsize=12)
-    ax.set_title(f'{scheduler_name} Scheduler - Gantt Chart (First {len(gantt_data)} steps)', fontsize=14)
+    title = f'{scheduler_name} Scheduler - Gantt Chart'
+    if has_priority:
+        title += ' (with Priority Annotations)'
+    title += f' (First {len(gantt_data)} steps)'
+    ax.set_title(title, fontsize=14)
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
     
     if save_path:
         plt.savefig(save_path, dpi=150)
-        print(f"  📊 Gantt chart saved to: {save_path}")
+        print(f"  Gantt chart saved to: {save_path}")
     
     plt.show()
     return fig
@@ -93,6 +118,7 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
     
     results = []
     gantt_data = {}
+    gantt_priority_data = {}
     
     print("\n" + "="*80)
     print("LIVE SCHEDULER DEMO (with Gantt)")
@@ -114,6 +140,8 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
             
             # Store gantt chart data (first 200 steps)
             gantt_data[name] = sched.gantt[:200] if hasattr(sched, 'gantt') else []
+            gantt_priority_data[name] = (sched.gantt_priority[:200] 
+                                         if hasattr(sched, 'gantt_priority') else None)
             
             results.append({
                 'Scheduler': name,
@@ -144,6 +172,7 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
                 'Gantt Length': 0
             })
             gantt_data[name] = []
+            gantt_priority_data[name] = None
             
         except Exception as e:
             print(f"  ❌ Error: {e}")
@@ -157,6 +186,7 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
                 'Gantt Length': 0
             })
             gantt_data[name] = []
+            gantt_priority_data[name] = None
     
     # Display results table
     print("\n" + "="*80)
@@ -212,7 +242,8 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
             plot_gantt(gantt_data[best_turnaround['Scheduler']], 
                       best_turnaround['Scheduler'], 
                       num_processes,
-                      save_path=f"gantt_{best_turnaround['Scheduler']}.png")
+                      save_path=f"gantt_{best_turnaround['Scheduler']}.png",
+                      gantt_priority=gantt_priority_data.get(best_turnaround['Scheduler']))
         
         # Optionally show all Gantt charts
         try:
@@ -222,7 +253,8 @@ def live_demo_with_gantt(dataset, num_processes=50, show_gantt=False):
                     if gantt_data.get(name) and name != best_turnaround['Scheduler']:
                         print(f"\n📊 Gantt Chart for {name}")
                         plot_gantt(gantt_data[name], name, num_processes,
-                                  save_path=f"gantt_{name}.png")
+                                  save_path=f"gantt_{name}.png",
+                                  gantt_priority=gantt_priority_data.get(name))
         except (EOFError, KeyboardInterrupt):
             print("\n  Skipping additional Gantt charts...")
     
@@ -236,7 +268,7 @@ if __name__ == "__main__":
     
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     
-    dataset_path = "./dataset/test/dataset_starvation_test.csv"
+    dataset_path = "./dataset/test/dataset_challenging_500.csv"
     
     if not os.path.exists(dataset_path):
         print(f"Dataset not found: {dataset_path}")

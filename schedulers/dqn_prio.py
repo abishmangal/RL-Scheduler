@@ -53,6 +53,9 @@ class DQNPriority(Scheduler):
 
         self.time_quantum = kwargs.get('time_quantum', 4)
         
+        # Priority history for Gantt chart visualization
+        self.gantt_priority = []
+        
         # Dictionary tracking mirrors the training environment
         self.wait_since = {}
         self.total_wait = {}
@@ -106,6 +109,7 @@ class DQNPriority(Scheduler):
         time = 0
         self.gantt = []
         
+        self.gantt_priority.clear()
         self.wait_since.clear()
         self.total_wait.clear()
         self.last_run_time.clear()
@@ -143,6 +147,7 @@ class DQNPriority(Scheduler):
                     self.first_run_time[pid] = time
                 
                 self.gantt.append(pid)
+                self.gantt_priority.append(priority)
                 remaining -= 1
                 quantum_rem -= 1
                 time += 1
@@ -167,6 +172,7 @@ class DQNPriority(Scheduler):
                     self.last_run_time.pop(pid, None)
             else:
                 self.gantt.append(-1)
+                self.gantt_priority.append(-1)
                 time += 1
 
     def _get_priority(self, data_pointer: int, processes: list, current_time: int) -> int:
